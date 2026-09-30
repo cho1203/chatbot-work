@@ -1,0 +1,15 @@
+{
+  "pages_original": 402,
+  "pages_output": 402,
+  "bookmarks_original": 143,
+  "bookmarks_output": 143,
+  "replacements": 12708,
+  "translated_pages": 390,
+  "issues": [],
+  "outside_edit_pixel_changes": [],
+  "source_sha256": "c37dc0cc9fb8fefab56a64862cb6d1ab454d212b37b0317e0b579ae90985ce65",
+  "output_sha256": "d1cbe290f95870beb9d971312e7fa0fdaf935c0e61f30b49bbc5214e7e9184c2",
+  "original_file": "원본_B-64484KO-2_02_Machining Center 취급설명서(30i, 31i, 32i).PDF",
+  "output_file": "한글번역_B-64484KO-2_02_Machining Center 취급설명서(30i, 31i, 32i).pdf",
+  "notes": "기계 조작 키, 제어 코드, 단위, 모델명 및 식별자는 보존. 번역 영역 밖의 전 페이지 렌더링과 숫자 및 G/M 코드 대조 통과."
+}
