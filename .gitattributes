@@ -5,3 +5,5 @@
 .gitattributes text eol=lf
 *.pdf binary
 *.PDF binary
+data/samkwang/MCT[[:space:]]인재[[:space:]]육성.xlsx filter=lfs diff=lfs merge=lfs -text
+data/samkwang/설비[[:space:]]수리[[:space:]]보고서.xlsx filter=lfs diff=lfs merge=lfs -text
