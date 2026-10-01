@@ -11,7 +11,7 @@
 ### 0.1 무엇을 구현하는 시스템인가
 
 한 질문으로 다음을 처리한다:
-1. **FANUC 매뉴얼** 2종에서 구성·사양·동작 찾기
+1. **FANUC 매뉴얼** 원본 2종에서 구성·사양·동작 찾기 (번역 2종은 언어 전환 버튼용, 검색 대상 아님)
 2. **설비 수리 보고서** (엑셀)에서 고장 이력·조치 찾기
 3. **작업표준서** (엑셀)에서 점검·정비 절차 찾기
 
@@ -21,7 +21,7 @@ FastAPI가 PDF와 엑셀 청크를 Chroma (bge-m3)에 색인하고, GITC가 설�
 |---|---|---|---|
 | 질문 | 질의, 직전 질의 | 질의 라우팅→임베딩 검색→재순위→생성 분기 | JSON 답변, 출처 쪽, 관련 그림·표 |
 | 근거 | 같은 질의 | 같은 검색 후 카드 항목으로 변환 | 페이지 이미지, 미리보기, 번역 짝 |
-| 색인 준비 | 원본 PDF 두 권 | 추출→청킹→임베딩→Chroma | `manual_chunks` 2,348개 |
+| 색인 준비 | 원본 PDF 두 권 (번역 2권은 비색인) | 추출→청킹→임베딩→Chroma | `manual_chunks` 2,348개 |
 | 언어 전환 | 이미 찾은 원본 파일 쪽 | 번역 PDF의 원본 쪽 표시로 짝 조회 | 번역 글과 번역 파일 쪽. 재검색 없음 |
 
 ### 0.2 구현을 구성하는 계층 구조
@@ -30,8 +30,8 @@ FastAPI가 PDF와 엑셀 청크를 Chroma (bge-m3)에 색인하고, GITC가 설�
 flowchart TB
   U[정적 화면 index.html] --> A[FastAPI REST]
   A --> R[질의 라우팅·문서 종류 선택·검색·재순위·생성]
-  R --> V[(Chroma: manual_chunks + repair_chunks)]
-  R --> G[GITC 또는 로컬 Qwen]
+  R --> V[(Chroma: manual_chunks 단일 컬렉션)]
+  R --> G[GITC 또는 local(로컬) Qwen]
   A --> P[page_align 번역 짝 - PDF만]
   
   PDF["PDF 원본 2종"] --> PDFE[bge-m3 임베딩]
@@ -52,9 +52,9 @@ flowchart TB
 
 | 프로세스 | 코드 기준 | 역할 |
 |---|---|---|
-| FastAPI | `search_api.py` 실행부, `127.0.0.1:8155` | 화면·PDF·검색·답변 |
+| FastAPI | `search_api.py` 실행부, local(로컬) 8155 포트 | 화면·PDF·검색·답변 |
 | 임베딩 | 시작 시 `SentenceTransformer("BAAI/bge-m3")` | 질의 벡터. 청크 벡터는 이미 Chroma에 있음 |
-| 생성 | `call_gitc`. 키가 없을 때만 로컬 Qwen | 설명 답 한 갈래 |
+| 생성 | `call_gitc`. 키가 없을 때만 local(로컬) Qwen | 설명 답 한 갈래 |
 | 페이지 정렬 | `page_align.load` | 번역 짝 캐시 |
 
 포트 8155, 컬렉션 `manual_chunks`는 `search_api.py`와 `index_to_chroma.py`에 고정이다. 같은 포트에 중복 기동 불가.
@@ -67,10 +67,10 @@ flowchart TB
 |---|---|---|
 | `data/samkwang/manual_1_en.pdf` | MANUAL GUIDE i 영어 원본 (B-63874EN-2). 검색 대상 | 558쪽, 텍스트·그림·표·화면 포함 |
 | `data/samkwang/manual_1_ko.pdf` | 취급설명서 한글 원본 (B-64484KO-2). 검색 대상 | 402쪽, 보호 암호 가능 |
-| `data/samkwang/manual_2_en.pdf` | manual_1_ko의 영어 번역 (지원 문서) | 색인에 포함 (신규) |
-| `data/samkwang/manual_2_ko.pdf` | manual_1_en의 한글 번역 (지원 문서) | 색인에 포함 (신규) |
-| `poc_parsing/merged_ko.json` | 한글 원본 + 영어 번역본 청크 | 753 + N개. text, table, figure |
-| `poc_parsing/merged_en.json` | 영어 원본 + 한글 번역본 청크 | 1,595 + N개. text, table, figure, ui_screen |
+| `data/samkwang/manual_2_en.pdf` | manual_1_ko의 영어 번역 (지원 문서) | 색인 안 함. 언어 전환 버튼에서만 사용 |
+| `data/samkwang/manual_2_ko.pdf` | manual_1_en의 한글 번역 (지원 문서) | 색인 안 함. 언어 전환 버튼에서만 사용 |
+| `poc_parsing/merged_ko.json` | 한글 원본 청크 (manual_1_ko) | 753개. text, table, figure |
+| `poc_parsing/merged_en.json` | 영어 원본 청크 (manual_1_en) | 1,595개. text, table, figure, ui_screen |
 | `poc_parsing/chroma_db` | `manual_chunks`, cosine, 2,348+ 벡터 | PDF 청크 임베딩 |
 
 **엑셀 데이터 (신규, 색인 대상: 예상 400~800 청크)**
@@ -111,25 +111,9 @@ sequenceDiagram
 
 번역 PDF 정렬과 엑셀 처리는 이 후단에서 따로 실행한다.
 
-### 0.5b 색인 준비 순서 (엑셀 신규)
+### 0.5b 색인 준비 순서 (엑셀)
 
-```mermaid
-sequenceDiagram
-  participant D as 개발자
-  participant E as ingest_repair_logs.py (신규)
-  participant X as repair_logs.json (신규)
-  participant I as index_to_chroma.py
-  participant V as Chroma
-  D->>E: 설비 수리 보고서.xlsx 입력 실행
-  E->>E: 행 읽기, 텍스트 추출, 키워드 6개 필터, 80-90% 샘플링
-  E->>X: 청크 JSON 저장 (doc_type=repair_log)
-  D->>I: manual_chunks와 repair_chunks 함께 적재
-  I->>I: bge-m3로 정규화 임베딩
-  I->>V: 모든 청크 색인 (PDF + 엑셀)
-```
-
-작업표준서도 유사하게 `work_standard_chunks.json`으로 생성 후 같은 Chroma 컬렉션에 적재한다.
-
+PDF와 같은 패턴이다: `ingest_excel_data.py`가 엑셀을 읽어 `repair_logs.json`(수리 보고서), `work_standard_*.json`(작업표준서)을 만들고, 같은 `index_to_chroma.py`가 PDF 청크와 함께 `manual_chunks`에 적재한다. 상세 처리 로직은 10.3절 참고.
 
 ### 0.6 질문 한 건의 실행 순서
 
@@ -179,7 +163,7 @@ sequenceDiagram
 
 ### 0.9 재구현 순서
 
-PDF → 청킹 → Chroma → 라우팅 → 생성 → 페이지 정렬 → 화면. 엑셀 → 청킹 → Chroma (통합).
+PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → (PDF만) 페이지 정렬 → 라우팅 → 재순위 → 생성 → 화면. 색인까지는 PDF/엑셀이 따로 가고, 그 이후는 같은 파이프라인을 공유한다.
 
 ## 1. 문서의 목적과 사용법
 
@@ -211,7 +195,7 @@ PDF → 청킹 → Chroma → 라우팅 → 생성 → 페이지 정렬 → 화�
 
 ### 3.3 검색·이미지·언어
 
-**PDF:** 검색은 사용자 선택 또는 자동 감지로 한 책만 본다. `ko`는 취급설명서 + 영어 번역, `en`은 MANUAL GUIDE i + 한글 번역이다. 근거 카드는 청크 종류에 따라 페이지 이미지, 표 HTML, 그림 자르기를 붙인다. 언어 버튼은 짝이 있을 때만 번역 글과 번역 파일 쪽을 보여 주고, 그림·화면은 번역 쪽에 실도판이 있을 때만 이미지를 바꾼다. 현재 캐시의 실도판 수는 0이다.
+**PDF:** 검색은 사용자 선택 또는 자동 감지로 한 책만 본다. `ko`는 취급설명서 원본(manual_1_ko)만, `en`은 MANUAL GUIDE i 원본(manual_1_en)만 검색 대상이다. 번역본(manual_2_en, manual_2_ko)은 색인하지 않고, 언어 버튼을 눌렀을 때만 페이지 짝으로 보여준다. 근거 카드는 청크 종류에 따라 페이지 이미지, 표 HTML, 그림 자르기를 붙인다. 언어 버튼은 짝이 있을 때만 번역 글과 번역 파일 쪽을 보여 주고, 그림·화면은 번역 쪽에 실도판이 있을 때만 이미지를 바꾼다. 현재 캐시의 실도판 수는 0이다.
 
 **엑셀:** 검색 결과는 구조화 필드 (date, equipment, symptom, remedy 등)를 표시한다. 이미지는 제공하지 않는다. 언어 버튼은 없다 (메타데이터만 표시).
 
@@ -233,44 +217,26 @@ PDF → 청킹 → Chroma → 라우팅 → 생성 → 페이지 정렬 → 화�
 
 ## 4. 아키텍처와 파일 책임
 
-**핵심 파일 (PDF)**
+데이터 파일(PDF, 엑셀, 청크 JSON, Chroma)의 위치·개수는 0.4절을 따른다. 여기서는 **코드 파일이 각각 뭘 하는지**만 다룬다.
 
-| 파일/디렉터리 | 책임 |
+| 파일 | 책임 |
 |---|---|
 | `poc_parsing/search_api.py` | FastAPI, 라우팅·검색·생성, `/ask` `/search` `/` PDF 서빙 |
 | `poc_parsing/page_align.py` | PDF 번역 짝 생성·캐시 (원본 쪽 표시) |
 | `poc_parsing/rebuild_originals.py` | PDF 텍스트 청킹, 샘플 그림·표 유지, 110 dpi 렌더 |
-| `poc_parsing/index_to_chroma.py` | PDF + 엑셀 청크 임베딩, Chroma 색인 적재 |
+| `poc_parsing/ingest_excel_data.py` (신규) | 엑셀 청킹, 키워드 6개 추출, 80~90% 샘플링 |
+| `poc_parsing/index_to_chroma.py` | PDF + 엑셀 청크 임베딩, Chroma 색인 적재 (전체 교체) |
 | `poc_parsing/static/index.html` | 대화 UI, 근거 패널, 언어/문서 종류 전환, 필터 |
-| `poc_parsing/merged_ko.json`, `merged_en.json` | PDF 청크 (한글 + 영어 원본 및 번역) |
-| `data/samkwang/manual_*.pdf` | 원본 4권 (manual_1_en, manual_1_ko, manual_2_en, manual_2_ko) |
 | `chatbot/.env` | `GITC_API_KEY`, `GITC_BASE_URL`, `GITC_MODEL` |
 
-**신규 파일 (엑셀 및 색인)**
-
-| 파일/디렉터리 | 책임 | 상태 |
-|---|---|---|
-| `poc_parsing/ingest_excel_data.py` | 엑셀 청킹, 키워드 추출, 샘플링 | 신규 작성 |
-| `poc_parsing/repair_logs.json` | 설비 수리 보고서 청크 (예상 400~600개) | 신규 생성 |
-| `poc_parsing/work_standard_mct.json` | MCT 작업표준서 청크 | 신규 생성 |
-| `poc_parsing/work_standard_tools.json` | 공구 표준서 청크 | 신규 생성 |
-| `data/samkwang/설비 수리 보고서.xlsx` | 원본 엑셀 (수리 이력) | 기존 |
-| `data/samkwang/M3 TN4 DECO 작업표준서_251104.xlsx` | 원본 엑셀 (작업 표준) | 기존 |
-| `data/samkwang/공구 수입검사 작업표준서.xlsx` | 원본 엑셀 (검사 기준) | 기존 |
-
-**미사용 (이전 실험)**
-
-| 파일 | 이유 |
-|---|---|
-| `run_docling.py`, `normalize.py`, `ingest_full_manuals.py` | 현재 파이프라인이 아님 |
-| `.env`의 포트 8787, 컬렉션 `fanuc_manuals` | `search_api.py`는 8155, `manual_chunks` 사용 |
+**미사용 (이전 실험):** `run_docling.py`, `normalize.py`, `ingest_full_manuals.py` — 현재 파이프라인 아님. `.env`의 포트 8787, 컬렉션 `fanuc_manuals`도 실제 설정과 다름 (8155, `manual_chunks` 사용).
 
 ## 5. 데이터 계약
 
 ### 5.1 검색 레코드 — PDF 청크
 
 청크 필드는 `doc_id`, `doc_type`, `lang`, `chunk_id`, `chunk_type`, `page`, `section_path`, `text`, `table`, `figure`, `ui_screen`, `source_anchor`, `note`다. 
-- `doc_id`: 문서 식별자. `manual_1_en`, `manual_1_ko`, `manual_2_en`, `manual_2_ko`
+- `doc_id`: 문서 식별자. `manual_1_en`, `manual_1_ko` (색인 대상은 원본 2종뿐. `manual_2_en`, `manual_2_ko`는 색인하지 않고 언어 전환 버튼에서만 쓴다)
 - `doc_type`: `manual` (고정)
 - `chunk_id`는 `{lang}_p{쪽:04d}_c{순번:02d}`이고 중복이면 색인 적재가 멈춘다. 
 - `page`는 PDF 뷰어에 치는 파일 쪽이지 인쇄 하단 쪽 번호가 아니다. 
@@ -286,7 +252,7 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 - `chunk_id`: `{doc_type}_{row_id}`. 예: `repair_log_r00245`
 - `chunk_type`: `repair_entry` (수리 보고서) 또는 `procedure` (작업표준서)
 - `text`: 고장 내용 또는 절차를 한 문단으로 정제한 글 (검색용)
-- 메타데이터 필드 (구조화):
+- 구조화 필드:
   - **수리 보고서**: `date`, `equipment`, `symptom`, `remedy`, `duration_days`, `keywords` (배열, 6개), `responsible_person`
   - **작업표준서**: `equipment`, `procedure_name`, `frequency`, `standard_items` (배열)
 - `source_anchor`: 행 번호 또는 절차 ID
@@ -298,7 +264,7 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 `SearchIn`: `query`, `top_k=3`, `prior_query`, `document_type=""`, `keywords=[]` (선택).
 `AskIn`: `query`, `prior_query`, `document_type=""` (선택).
 
-`document_type=""` 시 자동 감지: "고장" → repair_log, "점검" → work_standard, 기본 → manual.
+`document_type=""` 시 자동 감지: "고장/수리" → repair_log, "점검/정기" → work_standard, 기본 → manual.
 서버 대화 저장 없음. 이어 묻기는 브라우저 `prior_query`만 사용.
 
 ### 5.3 검색 결과와 답변
@@ -361,8 +327,8 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 | 용어 | 이 시스템에서의 뜻 | 코드 |
 |---|---|---|
 | 보여 주기 질의 | 보여·표시·보고 싶이 있고 종류가 정해진 질의. 생성 모델을 부르지 않는다 | `wants_excerpt` |
-| 근거 고정 답 | 검색 결과만으로 정해 둔 존댓말을 내는 경로 | `delete_confirm_answer` (PDF 전용) 또는 `template_answer` (엑셀) |
-| 생성 | 검색 청크만 컨텍스트로 넣고 모델이 존댓말을 쓰는 일 | `build_prompt`, `call_gitc` |
+| 근거 고정 답 | 검색 결과만으로 정해 둔 언어를 내는 경로 | `delete_confirm_answer` (PDF 전용) 또는 `template_answer` (엑셀) |
+| 생성 | 검색 청크만 컨텍스트로 넣고 모델이 언어를 쓰는 일 | `build_prompt`, `call_gitc` |
 | RAG | 검색 청크 밖을 보지 않고 생성하게 하는 구조. 검색이 비면 생성하지 않는다 | `/ask`의 설명 분기 |
 | 후처리 | 생성문의 불필요한 부분을 지우는 일 | `polish_answer` |
 | 근거 카드 | 말풍선 밖 오른쪽 패널 | `/search`의 `to_item`, `to_repair_item` |
@@ -422,7 +388,7 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 
 ### 8.3 런타임 전환
 
-`selected_api`는 `GITC_API_KEY`가 있으면 `gitc`다. 그 키가 없을 때만 OpenAI, Anthropic, Gemini, 마지막에 로컬 `Qwen/Qwen2.5-1.5B-Instruct` 4bit다. 현재 운영 전제는 GITC이고 모델 이름은 `hyperclovax-seed-32b`다. 호출은 temperature 0.2, 제한 시간 60초다. `GITC_BASE_URL` 또는 `GITC_MODEL`이 비어 있으면 시작 로그로 알리고, 실제 설명 질문에서 500이 난다. GPU에 올라가는 상시는 임베딩 모델이다. 로컬 Qwen은 키가 없을 때만 추가로 올라간다.
+`GITC_API_KEY`가 있으면 GITC(`hyperclovax-seed-32b`, temperature 0.2, 제한 시간 60초)를 쓰고, 없으면 local(로컬) `Qwen/Qwen2.5-1.5B-Instruct` 4bit로 대체한다. `GITC_BASE_URL` 또는 `GITC_MODEL`이 비어 있으면 시작 로그로 알리고, 실제 설명 질문에서 500이 난다.
 
 ## 9. 검증과 오류 처리
 
@@ -445,36 +411,49 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 - 책 전환 금지 ✓ ("공구경?" ko → "표?" ko 유지)
 - 다른 책 결과 차단 ✓
 
-## 9.1 엑셀 데이터 처리 설계 (신규)
+## 10. 엑셀 데이터 처리 설계
 
-### 9.1.1 설비 수리 보고서 (repair_logs.json) 처리 파이프라인
+### 10.1 설비 수리 보고서 (repair_logs.json) 처리 파이프라인
 
 **입력:** `data/samkwang/설비 수리 보고서.xlsx` (131.3MB, 행 수 예상 5,000~10,000)
 
+**⚠️ 선행 작업 필수: 실제 열 이름 확인.** 이 절의 `날짜`, `설비명`, `고장증상`, `조치내용`은 가정한 이름이다. 코드 작성 전 반드시 `pd.read_excel(...).columns`로 실제 헤더를 확인하고, 다르면 10.3절 코드의 `row['...']` 키를 맞춰 고친다. 시트가 여러 개면 어느 시트를 쓸지도 이때 정한다.
+
 **처리:**
 
-1. pandas로 읽기, 필수 열 확인, 빈 행 제거, 80~90% 샘플링
-2. 텍스트 정제 (1000자 기준), 키워드 6개 추출 (설비명, 증상, 조치, 부위, 우선도, 담당자)
+1. pandas로 읽기, 실제 열 이름 확인(위 경고 참고), 필수 열 확인, 빈 행 제거, 80~90% 샘플링
+2. 텍스트 정제 (1000자 기준), 키워드 6개 추출
 
-3. **메타데이터:** date, equipment, symptom, remedy, duration_days, keywords[], text
-4. **색인:** `{equipment} {symptom} {remedy}` + keywords
+**키워드 6개 추출 방법 (사전 기반, 1차 구현 기준):**
+- **설비명**: 셀 값을 그대로 사용 (예: `MCT-3`, `DECO#1`). 별도 추출 로직 없음.
+- **증상 카테고리**: 고정 사전과 `in` 매칭. 예: `{"진동","과열","정밀도","에러","정지","누유","소음"}` 중 고장증상 텍스트에 포함된 단어
+- **조치 종류**: 고정 사전 매칭. 예: `{"교체","청소","보정","수리","조정","소프트"}` 중 조치내용 텍스트에 포함된 단어
+- **부위**: 고정 사전 매칭. 예: `{"베어링","스핀들","모터","냉각","유압","전장","제어반"}`
+- **우선도**: 엑셀에 전용 열이 있으면 그 값, 없으면 `duration_days` 기준 규칙(1일 이하=긴급, 2~3일=높음, 그 외=보통)으로 산출
+- **담당자/팀**: 전용 열이 있으면 그 값, 없으면 생략 (6개 중 선택 항목)
+- 사전에 없는 신조어·약어는 1차 구현에서 놓칠 수 있다. 샘플 100행을 눈으로 먼저 확인하고 사전을 보강한다.
+
+**메타데이터:** date, equipment, symptom, remedy, duration_days, keywords[], text
+**색인 문장:** `{equipment} {symptom} {remedy}` + keywords
 
 **출력:** `poc_parsing/repair_logs.json` (청크 JSON, 예상 400~600개)
 
-### 9.1.2 작업표준서 (work_standard_*.json) 처리
+### 10.2 작업표준서 (work_standard_*.json) 처리
 
 **입력:** 
 - `M3 TN4 DECO 작업표준서_251104.xlsx`
 - `공구 수입검사 작업표준서.xlsx`
+
+**⚠️ 선행 작업 필수:** 두 파일의 실제 시트 구성과 열 이름을 먼저 연다. 표 형식(셀 병합, 다단 헤더 등)이 수리 보고서와 다를 수 있어 10.1절과 같은 pandas 단순 읽기가 안 통할 수 있다.
 
 **처리:**
 - 각 시트 또는 표를 절차 단위로 청크화
 - 메타데이터: 설비, 절차명, 빈도(일일/주간/월간/년간), 표준항목(배열)
 - 검색용 문장: `{설비} {절차명} {빈도} {표준항목.join(' ')}`
 
-**출력:** `poc_parsing/work_standard_mct.json`, `pocparsing/work_standard_tools.json`
+**출력:** `poc_parsing/work_standard_mct.json`, `poc_parsing/work_standard_tools.json`
 
-### 9.1.3 색인 및 Chroma 적재
+### 10.3 색인 및 Chroma 적재
 
 ```python
 # ingest_excel_data.py (신규, rebuild_originals.py와 병렬 실행)
@@ -504,7 +483,7 @@ def index_all_docs():
     # bge-m3 임베딩 후 Chroma 적재
 ```
 
-### 9.1.4 검색 및 필터링 전략
+### 10.4 검색 및 필터링 전략
 
 **원칙: 설비명·날짜 같은 "정확해야 하는 값"은 유사도로 찾지 않는다.**
 
@@ -516,14 +495,24 @@ PDF는 문장 뜻이 비슷하면 맞는 결과지만, 엑셀 수리 이력은 �
 
 **UI 키워드 필터 (6개):** 사용자가 설비명 등을 직접 선택하면 그대로 1단계 하드 필터로 쓴다.
 
-### 9.1.5 응답 포맷
+### 10.5 응답 포맷
 
 **`/ask`:** answer, sources[], model_used=repair_log_summary, document_type_used, offers.related_repairs[]
 **`/search`:** chunk_id, chunk_type, doc_type, date, equipment, symptom, remedy, keywords[], text_preview, source_anchor
 
-## 10. API 계약
+### 10.6 `GET /filters` 옵션 추출 (11.1절 라우트의 구현)
 
-### 10.1 주요 라우트
+서버 시작 시 `repair_logs.json`, `work_standard_*.json`을 읽어 각 구조화 필드의 **고유값 목록**을 한 번만 뽑아 메모리에 캐싱한다. 요청마다 다시 계산하지 않는다.
+
+- `document_types`: 고정값 `["manual", "repair_log", "work_standard"]`
+- `equipment`: `repair_logs.json`의 `equipment` 필드 중복 제거 목록 (예: `["MCT-1", "MCT-3", "DECO#1", ...]`)
+- `keywords`: 모든 청크의 `keywords` 배열을 합쳐 중복 제거 (너무 많으면 빈도 상위 N개만)
+
+PDF 청크는 `/filters`에 포함하지 않는다 (PDF는 책 선택이지 필드 선택이 아니다). 엑셀 원본이 바뀌어 재색인하면 이 캐시도 서버 재시작으로 갱신된다.
+
+## 11. API 계약
+
+### 11.1 주요 라우트
 
 | 목적 | 메서드·경로 | 계약 |
 |---|---|---|
@@ -532,11 +521,11 @@ PDF는 문장 뜻이 비슷하면 맞는 결과지만, 엑셀 수리 이력은 �
 | 근거 | `POST /search` | `SearchIn` JSON → 항목 배열 (PDF/엑셀 항목 섞임) |
 | PDF | `GET /manuals/{name}.pdf` | `manual_1_ko`, `manual_1_en`, `manual_2_en`, `manual_2_ko`, `ko`, `en` |
 | 이미지 | `GET /images/...` | `poc_parsing/images` 정적 파일 |
-| 필터 (신규) | `GET /filters` | `{"document_types": [...], "keywords": [...], "equipment": [...]}` |
+| 필터 (신규) | `GET /filters` | `{"document_types": [...], "keywords": [...], "equipment": [...]}`. 추출 방법은 10.6절 |
 
 스트리밍 프레임은 없다. 답과 근거는 서로 다른 JSON 응답이다.
 
-### 10.2 요청·응답
+### 11.2 요청·응답
 
 ```json
 {"query":"메모리 카드에서 프로그램을 어떻게 넣나요?","prior_query":"","top_k":3}
@@ -544,85 +533,85 @@ PDF는 문장 뜻이 비슷하면 맞는 결과지만, 엑셀 수리 이력은 �
 
 `/ask`에는 `top_k`가 없다. 화면은 두 요청 모두에 직전 사용자 문장을 `prior_query`로 넣는다. 성공한 설명 답의 `model_used`는 `gitc:hyperclovax-seed-32b`다.
 
-### 10.3 화면이 두 응답을 합치는 방식
+### 11.3 화면이 두 응답을 합치는 방식
 
 `submitQuery`가 `Promise.allSettled`로 `/ask`와 `/search`를 동시에 보낸다. 나중에 보낸 질문의 응답이 먼저 도착해도, 요청 번호가 현재 턴과 다르면 버린다. `/ask`만 실패하면 말풍선에 오류를 넣고, `/search`만 실패하면 답은 유지한 채 근거를 비운다. 프레임 버퍼를 유지하는 SSE 파서는 필요 없다.
 
-### 10.4 인증과 공개 설정
+### 11.4 인증과 공개 설정
 
-확인한 경로에는 계정 인증이 없다. 바인드는 `127.0.0.1`이다. 회사 망에 열었던 `0.0.0.0` 설정은 이 시초판의 운영 상태가 아니다. 외부에 열 경우 인증, 질문 횟수 제한, GITC 키 보호를 따로 설계한다.
+확인한 경로에는 계정 인증이 없다. 바인드는 local(로컬) 전용이다. 회사 망에 열었던 전체 공개 설정은 이 시초판의 운영 상태가 아니다. 외부에 열 경우 인증, 질문 횟수 제한, GITC 키 보호를 따로 설계한다.
 
-## 11. LLM, 모델 관리와 동시성
+## 12. LLM, 모델 관리와 동시성
 
-질의 임베딩은 `sentence-transformers`와 PyTorch다. 장치 로그가 `cuda:0`이면 GPU를 쓴다. 청크 임베딩과 질의 임베딩은 같은 `BAAI/bge-m3`이고 `normalize_embeddings=True`다. 모델을 바꾸면 `index_to_chroma.py`로 컬렉션을 다시 만든다.
+질의 임베딩은 `sentence-transformers`와 PyTorch다. 장치 로그가 `cuda:0`이면 GPU를 쓴다. 청크 임베딩과 질의 임베딩은 같은 `BAAI/bge-m3`이고 `normalize_embeddings=True`다. 모델을 바꾸면 저장된 벡터와 질의 벡터의 공간이 어긋나므로, `index_to_chroma.py`로 컬렉션을 반드시 다시 만든다.
 
 생성은 프로세스 안에서 동기 HTTP다. 워커 풀과 토큰 스트림은 없다. 질문 하나가 `/ask`에서 GITC를 최대 한 번 호출한다. `/search`는 생성 모델을 부르지 않는다. 첫 기동은 임베딩 로드와 컬렉션 open이 끝난 뒤에야 포트를 받는다. 준비 전 헬스 전용 라우트는 없다.
 
 동시 요청은 Uvicorn 기본 처리에 맡긴다. 대화 잠금은 브라우저가 전송 중에 입력을 막는 수준이다. 서버는 턴 번호를 알지 못한다.
 
-## 12. UI 재구현 계약
+## 13. UI 재구현 계약
 
 입력, 뒤로, 예시, 말풍선, 근거, 문서 선택 (탭/필터), 언어 버튼, 관련 제안. 
-`PDF N` = 파일 쪽 (인쇄쪽 아님). 전송 중: “찾는 중”.
+`PDF N` = 파일 쪽 (인쇄쪽 아님).
 
-## 13. 별도 기능과 보조 도구
+## 14. 별도 기능과 보조 도구
 
 **번역 짝:** PDF 수정 시 `page_align.py` 다시 스캔. 빈 암호 풀기: `.cache/unlocked_manual_1.pdf`.
 **미사용:** Docling, ingest_full_manuals.py, CHROMA_COLLECTION=fanuc_manuals (사용: manual_chunks).
 
-## 14. 누락 자산 복원 설계
+## 15. 누락 자산 복원 설계
 
-### 14.1 원본과 모델 준비
+### 15.1 원본과 모델 준비
 
 복원 목록은 원본 PDF 두 권, 번역 PDF 두 권, `bge-m3` 캐시 또는 다운로드, GITC 키·베이스 URL·모델 이름이다. 외부에서 받은 Chroma 디렉터리는 청크 파일·모델과 같은 버전일 때만 연다.
 
-### 14.2 인덱스 재구축
+### 15.2 인덱스 재구축
 
 조각 JSON을 유지한 채 벡터만 다시 만들 때는 `index_to_chroma.py`만 실행한다. 이 스크립트는 기존 `manual_chunks`를 삭제한다. PDF부터 다시 조각을 만들 때는 `rebuild_originals.py` 다음에 색인 스크립트를 실행한다. 샘플 그림·표 쪽 목록을 바꾸면 그 쪽의 기존 자르기가 빠지거나 글 청크와 겹칠 수 있으므로 별도 사본에서 먼저 확인한다.
 
-### 14.3 재구축 판정
+### 15.3 재구축 판정
 
 시작 로그가 `count=2348`, `번역 짝: ko 391쪽, en 534쪽`, `LLM: API gitc`인지 본다. 대표 질문에서 취급설명서와 MANUAL GUIDE i가 한 답에 섞이지 않는지, 언어 전환의 `원본 N`이 번역 PDF 오른쪽 위와 같은지 확인한다. 색인만 있고 GITC가 없으면 보여 주기 질의만 되고 설명 질의는 완료가 아니다.
 
-## 15. 설치와 실행
+## 16. 설치와 실행
 
 ```bash
 cd poc_parsing
-./venv/bin/python search_api.py  # http://127.0.0.1:8155
+./venv/bin/python search_api.py  # local(로컬) 8155 포트로 접속
 ./venv/bin/python index_to_chroma.py  # 청크 JSON 변경 후만 실행
 ```
 
 보존: PDF, venv, HF 캐시. 금지: 키 전송, 8155 중복 기동.
 
-## 16. 인수 기준과 검증 계획
+## 17. 인수 기준과 검증 계획
 
-### 16.1 단계별 합격 조건
+### 17.1 단계별 합격 조건
 
 **PDF 매뉴얼**
 1. 자료: PDF 청크 753 + 1,595의 합 2,348 + 엑셀 청크 (예상 600~800)의 합이 전체 컬렉션과 일치한다.
 2. 라우팅: 공구경 질문은 한글 원본, 메모리 카드 질문은 영어 원본만 나온다. (PDF 문서 선택)
 3. 종류: “정지화면의 표”는 표 청크만 나온다. 소프트키 화면을 표로 다시 쓰지 않는다.
 4. 그림·표: 자르기가 없는 그림 번호는 그 번호의 글 페이지로 물러나고, 다른 그림으로 대체하지 않는다.
-4b. **이어 묻기 중 없음:** "공구경보정 표 있어?"처럼 같은 주제에 표가 실제 없으면 `KIND_MISSING`을 반환한다. 범위를 넓혀 다른 주제(정지화면 등)의 표를 대신 가져오지 않는다.
+5. **이어 묻기 중 없음:** "공구경보정 표 있어?"처럼 같은 주제에 표가 실제 없으면 `KIND_MISSING`을 반환한다. 범위를 넓혀 다른 주제(정지화면 등)의 표를 대신 가져오지 않는다.
 
 **엑셀 데이터**
-5. 설비 수리 보고서: 수리 이력 질문 (고장, 수리, 이력)은 엑셀 근거를 반환한다. 날짜, 설비, 증상, 조치 메타데이터가 있다.
-6. 키워드 필터: UI에서 설비명, 증상, 조치 등 6개 키워드 선택 후 필터링이 작동한다.
-7. 샘플링: 연간 이력 80~90%만 색인되었으나, 검색 결과는 완전한 원본을 보여 준다.
-8. 작업표준서: 점검, 정비 질문은 표준서 항목과 빈도를 반환한다.
+6. 설비 수리 보고서: 수리 이력 질문 (고장, 수리, 이력)은 엑셀 근거를 반환한다. 날짜, 설비, 증상, 조치 메타데이터가 있다.
+7. 키워드 필터: UI에서 설비명, 증상, 조치 등 6개 키워드 선택 후 필터링이 작동한다.
+8. 샘플링: 연간 이력 80~90%만 색인되었으나, 검색 결과는 완전한 원본을 보여 준다.
+9. 작업표준서: 점검, 정비 질문은 표준서 항목과 빈도를 반환한다.
 
 **공통 분기**
-9. 생성: `model_used` = GITC 또는 `repair_log_summary`. 답에 `발췌`, `p.N` 없음 (PDF만).
-10. 보여 주기: `model_used` = `manual`.
-11. **이어 묻기 (신규 강화):**
+10. 생성: `model_used` = GITC 또는 `repair_log_summary`. 답에 `발췌`, `p.N` 없음 (PDF만).
+11. 보여 주기: `model_used` = `manual`.
+12. **이어 묻기 (신규 강화):**
     - `prior_query` 필수 (없으면 `NOT_FOUND`)
     - 직전 책·문서 유지 (책 전환 금지)
     - "표/그림 보여줄래?" → 직전 책의 그 종류만, 다른 책 차단
     - "메모리 카드는?" (새 주제) → 새 검색 (ko→en 전환 가능)
-12. 정렬: 번역 카드의 파일 쪽과 `원본 N`. (PDF만. 엑셀은 이미지 없음)
-13. 화면: 문서 종류 탭/드롭다운. 예시 버튼. `뒤로` = 턴 비우기.
+13. 정렬: 번역 카드의 파일 쪽과 `원본 N`. (PDF만. 엑셀은 이미지 없음)
+14. 화면: 문서 종류 탭/드롭다운. 예시 버튼. `뒤로` = 턴 비우기.
 
-### 16.2 필수 재현 시나리오
+### 17.2 필수 재현 시나리오
 
 **매뉴얼 시나리오** (기존)
 1. “공구경보정은 어떻게 시작하나요?” → ko 원본 회신
@@ -643,144 +632,31 @@ cd poc_parsing
 - GITC를 끈 경우 → 보여 주기와 구조화 응답만 가능 (생성 불가)
 - 8155 중복 기동 → 포트 충돌 감지 및 로그
 
-### 16.3 이 문서의 검증 범위
+### 17.3 이 문서의 검증 범위
 
-파일, 라우트, 청크 개수, 번역 짝 캐시 개수를 읽어 작성했다. 이 문서를 쓰는 시점에 대표 질문을 GPU에서 다시 호출하지는 않았다. 실행 재현은 16.1로 따로 확인한다.
+파일, 라우트, 청크 개수, 번역 짝 캐시 개수를 읽어 작성했다. 이 문서를 쓰는 시점에 대표 질문을 GPU에서 다시 호출하지는 않았다. 실행 재현은 17.1로 따로 확인한다.
 
-## 17. 구현 (주제 기반 세션)
+## 18. 참조 자료와 복원 순서
 
-### 핵심 원칙
-
-**같은 주제 = 같은 세션 (prior_query 유지)**
-```
-"공구경보정이 뭐야?" 
-  ↓ prior_query = "공구경보정이 뭐야?"
-"표도 보여줄래?" 
-  ↓ prior_query 유지 (같은 주제)
-```
-
-**다른 주제 = 새 세션 (prior_query 초기화)**
-```
-"메모리 카드는?" (새 키워드)
-  ↓ prior_query = "" (초기화) → 새 검색
-```
-
-### 추가할 것 (2가지만)
-
-**1. 브라우저 (index.html)**
-```javascript
-// 매 /ask, /search 요청에 추가
-const payload = {
-    query: userInput,
-    prior_query: previousQuery,  // 신규 (이전 질의 저장)
-    ...
-};
-
-// 응답 받은 후
-previousQuery = userInput;  // 다음 요청에 전달할 준비
-```
-
-**2. 서버 (search_api.py)**
-```python
-def search_manual(query, prior_query=""):
-    # 같은 주제인가?
-    if is_same_topic(query, prior_query):
-        # 이전 검색 결과 범위 내에서만 찾기
-        results = search_manual(prior_query)  # 재사용
-    else:
-        # 새 주제 = 새 검색
-        results = search_manual(query)        # 초기화
-    
-    return results
-```
-
-### 테스트 케이스
-
-- [ ] 같은 주제 + 다른 종류: "공구경?" → "표?" → 같은 주제의 표만 ✓
-- [ ] 새 주제: "메모리?" → 새 검색 (prior_query 초기화) ✓
-- [ ] prior_query 없음: 첫 질의면 정상 (오류 아님) ✓
-
-### 중요: 표 없음 = 다른 표 대체 금지 (오류 방지 핵심)
-
-**문제 상황:** "공구경보정"에는 표가 없는데, "표도 보여줄래?"라고 물으면 엉뚱한 주제(예: 정지화면)의 표를 가져오는 오류.
-
-**원칙:** 같은 주제로 좁힌 범위 안에 요청한 종류(표/그림)가 없으면, **그 상태 그대로 "없음"을 반환**한다. 범위를 넓히거나 다른 주제의 청크로 대체하지 않는다.
-
-```python
-def search_with_kind(prior_query, requested_kind):
-    # 1. 같은 주제로 좁힌 후보만 검색 (전체 책 재검색 금지)
-    candidates = search_manual(prior_query)
-
-    # 2. 그 후보 안에서만 종류 필터링
-    matched = [c for c in candidates if c.chunk_type == requested_kind]
-
-    # 3. 없으면 그대로 "없음" — 범위를 벗어난 대체 금지
-    if not matched:
-        return KIND_MISSING  # "공구경보정 관련 표는 매뉴얼에 없습니다"
-    return matched
-```
-
-**검증 질문 (16.2절에 포함):**
-- "공구경보정 표 있어?" (실제로 없음) → `KIND_MISSING`, 다른 주제 표 노출 금지
-- "공구경보정 그림 있어?" (실제로 없음) → `KIND_MISSING`, 다른 그림 대체 금지
-- 답변 문구: "죄송하지만 공구경보정 관련 표/그림은 매뉴얼에서 찾지 못했습니다."
-
-### 17.1 파라미터 튜닝 전 테스트 질문 세트 (필수)
-
-**원칙: 정답을 모르면 튜닝이 좋아졌는지 나빠졌는지 판단할 수 없다.** 재순위 가중치(코드 적중×1.2, 번호 적중×1.0 등)나 엑셀 필터 점수를 조정하기 전에, 먼저 "질문 + 정답" 세트를 만들어 둔다.
-
-**세트 구성 (최소 20개 권장):**
-
-| 질문 | 기대 결과 | 확인 항목 |
-|---|---|---|
-| "공구경보정은 어떻게?" | ko 매뉴얼, text 청크 | 책 잠금 |
-| "공구경보정 표 있어?" | `KIND_MISSING` | 표 대체 금지 |
-| "메모리 카드 넣는 법?" | en 매뉴얼 | 주제 전환 |
-| "MCT-3 최근 고장은?" | repair_log, equipment=MCT-3만 | 하드 필터 |
-| (이전 실패 사례 계속 추가) | | |
-
-**사용법:**
-1. 파라미터(가중치, 필터 조건)를 바꾸기 전에 이 세트를 돌려서 기준 점수를 기록한다 (예: 18/20).
-2. 파라미터를 바꾼 뒤 같은 세트를 다시 돌린다.
-3. 점수가 내려가면 — 다른 질문에서 깨진 것이므로 — 되돌리거나 원인을 먼저 찾는다.
-4. 새로 발견한 오류 사례(예: 엉뚱한 표가 나온 경우)는 세트에 바로 추가해 반복되지 않게 한다.
-
-이 세트 없이 감으로 숫자를 조정하면, 한쪽 질문은 고쳐지고 다른 쪽 질문은 모르게 깨지는 일이 반복된다.
-
-## 18. 알려진 차이와 유지보수
-
-포트 8787/컬렉션 fanuc_manuals은 실제 설정이 아님 (8155/manual_chunks 사용). Docling은 현재 파이프라인 아님. 그림·표는 샘플만, section_path 비어있음. 모델 변경 시 벡터 공간 일치 확인 필수.
-
-## 19. 참조 자료와 복원 순서
-
-**필수 파일 목록**
-
-1. **코드**: `search_api.py`, `page_align.py`, `rebuild_originals.py`, `ingest_excel_data.py` (신규), `index_to_chroma.py`, `static/index.html`.
-2. **PDF 자료**: `data/samkwang/manual_1_en.pdf`, `manual_1_ko.pdf`, `manual_2_en.pdf`, `manual_2_ko.pdf` (원본 4권)
-3. **엑셀 자료**: `data/samkwang/설비 수리 보고서.xlsx`, `M3 TN4 DECO 작업표준서_251104.xlsx`, `공구 수입검사 작업표준서.xlsx`
-4. **청크 JSON**: `merged_ko.json`, `merged_en.json`, `repair_logs.json`, `work_standard_*.json`
-5. **색인**: `chroma_db/`
-6. **캐시**: `.cache/page_align.json`
-7. **비밀**: `chatbot/.env` (GITC 세 변수, 복사 금지)
+필수 파일 목록은 0.4절(데이터)과 4장(코드)을 그대로 따른다. `chatbot/.env`의 GITC 세 변수는 값을 복사하지 않고 이름만 확인한다.
 
 **복원 순서**
 
-1. PDF 원본 4권 확인 (`data/samkwang/`)
-2. 엑셀 원본 3종 확인 (`data/samkwang/`)
-3. 조각 JSON 확인 (`merged_*.json` + `repair_logs.json` + `work_standard_*.json`)
-4. 엑셀 청킹 재실행 (데이터 변경 시): `python ingest_excel_data.py`
-5. 색인 재적재: `python index_to_chroma.py`
-6. `.env`의 GITC 세 변수 확인
-7. `search_api.py` 단일 기동: `python search_api.py`
-8. 16.1~16.2 검증 질문 실행
+1. PDF 원본 4권, 엑셀 원본 3종 확인 (`data/samkwang/`)
+2. 조각 JSON 확인 (`merged_*.json` + `repair_logs.json` + `work_standard_*.json`)
+3. 엑셀 청킹 재실행 (데이터 변경 시): `python ingest_excel_data.py`
+4. 색인 재적재: `python index_to_chroma.py`
+5. `.env`의 GITC 세 변수 확인
+6. `search_api.py` 단일 기동: `python search_api.py`
+7. 17.1~17.2 검증 질문 실행
 
-## 20. 참조 색인 및 검증 기록
+## 19. 참조 색인 및 검증 기록
 
-### 20.1 주요 라우트 색인
+### 19.1 주요 라우트 색인
 
 `GET /`, `POST /ask`, `POST /search`, `GET /manuals/{name}.pdf`, `GET /images`, `GET /filters` (신규).
 
-### 20.2 핵심 자료 색인
+### 19.2 핵심 자료 색인
 
 **라우팅 및 검색:**
 `SearchIn`, `AskIn`, `search_manual`, `search_by_type`, `choose_document_type`, `choose_lang`, `requested_kind`, `is_followup` (검색): `search_api.py`.
@@ -800,26 +676,13 @@ def search_with_kind(prior_query, requested_kind):
 **색인:**
 `COLLECTION=manual_chunks` (혼합 색인): `index_to_chroma.py`.
 
-### 20.3 검증 기록
-
-2026-10-01에 현장 파일(data/samkwang/)과 POC 코드를 읽어 설계를 수정했다. 
+### 19.3 검증 기록
 
 **PDF 측정 (기존):** 청크 ko 753 + en 1,595 = 2,348개. 번역 짝 ko 391 + en 534 = 925개. 실도판 0개. 캐시 버전 3.
 
-**엑셀 측정 (신규):** 
+**엑셀 측정 (예상):** 
 - 설비 수리 보고서: 행 5,000~10,000, 샘플링 85%, 예상 청크 400~600
 - 작업표준서 (2종): 절차 200~400, 예상 청크 150~300
 - 전체 청크 합계 (예상): 2,348 + 600 = 약 2,948개
-
-**수정 내용:**
-- 0장: 아키텍처, 파일 위치 (PDF 4종 + 엑셀 3종 통합)
-- 4장: 파일 책임 (신규: ingest_excel_data.py, repair_logs.json 등)
-- 5장: 데이터 계약 (신규: 엑셀 청크 스키마)
-- 6장: 용어 (신규: 엑셀 전용 용어 추가)
-- 8장: 라우팅 (신규: choose_document_type)
-- 9.1장: 엑셀 처리 설계 (신규 섹션)
-- 10장: API (신규: /filters)
-- 16장: 인수 기준 (신규: 엑셀 시나리오)
-- 19장: 복원 순서 (신규: ingest_excel_data.py 단계)
 
 이 버전은 아직 코드 구현 전이다. 엑셀 처리 로직(`ingest_excel_data.py`)과 라우팅 개선(`choose_document_type`)은 재구현 단계에서 추가된다. 대표 질문의 신규 실행 검증은 코드 구현 후 진행한다.
