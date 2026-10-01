@@ -28,21 +28,21 @@ FastAPI가 PDF와 엑셀 청크를 Chroma (bge-m3)에 색인하고, GITC가 설�
 
 ```mermaid
 flowchart TB
-  U[정적 화면 index.html] --> A[FastAPI REST]
-  A --> R[질의 라우팅·문서 종류 선택·검색·재순위·생성]
-  R --> V[(Chroma: manual_chunks 단일 컬렉션)]
-  R --> G[GITC 또는 local(로컬) Qwen]
-  A --> P[page_align 번역 짝 - PDF만]
-  
-  PDF["PDF 원본 2종"] --> PDFE[bge-m3 임베딩]
+  U["정적 화면 index.html"] --> A["FastAPI REST"]
+  A --> R["질의 라우팅·문서 종류 선택·검색·재순위·생성"]
+  R --> V[("Chroma manual_chunks 단일 컬렉션")]
+  R --> G["GITC 또는 local 로컬 Qwen"]
+  A --> P["page_align 번역 짝 PDF만"]
+
+  PDF["PDF 원본 2종"] --> PDFE["bge-m3 임베딩"]
   PDF2["PDF 번역 2종"] --> P
-  EXCEL["엑셀 3종<br/>수리보고서/표준서"] --> EXCE[텍스트 추출<br/>→ 청킹<br/>→ 임베딩]
-  
+  EXCEL["엑셀 3종 수리보고서 표준서"] --> EXCE["텍스트 추출 청킹 임베딩"]
+
   PDFE --> V
   EXCE --> V
-  
-  A --> M[요청별 상태·페이지 잉크·필터 캐시]
-  S[venv·.env·단일 프로세스] -. 운영 .-> A
+
+  A --> M["요청별 상태 페이지 잉크 필터 캐시"]
+  S["venv env 단일 프로세스"] -. 운영 .-> A
   S -. 운영 .-> G
 ```
 
@@ -113,7 +113,22 @@ sequenceDiagram
 
 ### 0.5b 색인 준비 순서 (엑셀)
 
-PDF와 같은 패턴이다: `ingest_excel_data.py`가 엑셀을 읽어 `repair_logs.json`(수리 보고서), `work_standard_*.json`(작업표준서)을 만들고, 같은 `index_to_chroma.py`가 PDF 청크와 함께 `manual_chunks`에 적재한다. 상세 처리 로직은 10.3절 참고.
+```mermaid
+sequenceDiagram
+  participant D as 개발자
+  participant E as ingest_excel_data.py
+  participant X as repair_logs.json / work_standard_*.json
+  participant I as index_to_chroma.py
+  participant V as Chroma
+  D->>E: 엑셀 3종 입력 실행
+  E->>E: 행·절차 읽기, 키워드 6개 추출, 80~90% 샘플링
+  E->>X: 청크 JSON 저장
+  D->>I: PDF 조각과 함께 색인 실행
+  I->>I: bge-m3로 정규화 임베딩
+  I->>V: manual_chunks에 PDF 청크와 함께 적재
+```
+
+PDF와 같은 패턴이다: `ingest_excel_data.py`가 엑셀을 읽어 `repair_logs.json`(수리 보고서), `work_standard_*.json`(작업표준서)을 만들고, 같은 `index_to_chroma.py`가 PDF 청크와 함께 `manual_chunks`에 적재한다. `repair_chunks` 같은 별도 컬렉션은 쓰지 않는다. 상세 처리 로직은 10.3절 참고.
 
 ### 0.6 질문 한 건의 실행 순서
 
@@ -247,7 +262,7 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 ### 5.1b 검색 레코드 — 엑셀 청크 (신규)
 
 엑셀 행 청크는 다음 필드를 갖는다:
-- `doc_id`: `repair_report_2026` 또는 `work_standard_MCT` 등
+- `doc_id`: `repair_report_{수집 연도}` 또는 `work_standard_MCT` 등 (예: `repair_report_2026`)
 - `doc_type`: `repair_log` 또는 `work_standard`
 - `chunk_id`: `{doc_type}_{row_id}`. 예: `repair_log_r00245`
 - `chunk_type`: `repair_entry` (수리 보고서) 또는 `procedure` (작업표준서)
@@ -256,6 +271,8 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
   - **수리 보고서**: `date`, `equipment`, `symptom`, `remedy`, `duration_days`, `keywords` (배열, 6개), `responsible_person`
   - **작업표준서**: `equipment`, `procedure_name`, `frequency`, `standard_items` (배열)
 - `source_anchor`: 행 번호 또는 절차 ID
+
+**`keywords` 배열과 `equipment`/`responsible_person`의 관계 (중복 저장):** `keywords` 6개는 설비명·증상·조치·부위·우선도·담당자를 **전부 텍스트로** 담아 키워드 보강 검색(6장)에 쓴다. 그중 설비명과 담당자는 **하드 필터·화면 표시용으로 `equipment`, `responsible_person` 필드에도 그대로 중복 저장**한다 — `keywords`는 "글자가 포함되는지" 검색용, `equipment`는 "정확히 같은지"(`==`) 비교용으로 역할이 다르다. 10.1절에 필드별 상세를 둔다.
 
 엑셀 청크의 검색 문장은 `text` (정제된 글) + `keywords` (6개 키워드)를 결합한다. 날짜 범위 필터 (80~90% 샘플링)는 색인 시 적용한다.
 
@@ -425,15 +442,15 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 2. 텍스트 정제 (1000자 기준), 키워드 6개 추출
 
 **키워드 6개 추출 방법 (사전 기반, 1차 구현 기준):**
-- **설비명**: 셀 값을 그대로 사용 (예: `MCT-3`, `DECO#1`). 별도 추출 로직 없음.
+- **설비명**: 셀 값을 그대로 사용 (예: `MCT-3`, `DECO#1`). 별도 추출 로직 없음. `keywords[0]`에 넣는 동시에 `equipment` 필드에도 그대로 저장한다 (하드 필터용, 5.1b절 참고).
 - **증상 카테고리**: 고정 사전과 `in` 매칭. 예: `{"진동","과열","정밀도","에러","정지","누유","소음"}` 중 고장증상 텍스트에 포함된 단어
 - **조치 종류**: 고정 사전 매칭. 예: `{"교체","청소","보정","수리","조정","소프트"}` 중 조치내용 텍스트에 포함된 단어
 - **부위**: 고정 사전 매칭. 예: `{"베어링","스핀들","모터","냉각","유압","전장","제어반"}`
 - **우선도**: 엑셀에 전용 열이 있으면 그 값, 없으면 `duration_days` 기준 규칙(1일 이하=긴급, 2~3일=높음, 그 외=보통)으로 산출
-- **담당자/팀**: 전용 열이 있으면 그 값, 없으면 생략 (6개 중 선택 항목)
+- **담당자/팀**: 전용 열이 있으면 그 값, 없으면 생략. `keywords`에 넣는 동시에 `responsible_person` 필드에도 그대로 저장한다 (화면 표시용)
 - 사전에 없는 신조어·약어는 1차 구현에서 놓칠 수 있다. 샘플 100행을 눈으로 먼저 확인하고 사전을 보강한다.
 
-**메타데이터:** date, equipment, symptom, remedy, duration_days, keywords[], text
+**메타데이터:** date, equipment, symptom, remedy, duration_days, keywords[] (6개, 설비명·담당자 포함), responsible_person, text
 **색인 문장:** `{equipment} {symptom} {remedy}` + keywords
 
 **출력:** `poc_parsing/repair_logs.json` (청크 JSON, 예상 400~600개)
@@ -455,33 +472,34 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 
 ### 10.3 색인 및 Chroma 적재
 
-```python
-# ingest_excel_data.py (신규, rebuild_originals.py와 병렬 실행)
-def chunk_repair_logs(xlsx_path, output_json, sampling_ratio=0.85):
-    df = pd.read_excel(xlsx_path)
-    # 필터링, 정제, 키워드 추출
-    chunks = []
-    for idx, row in df.sample(frac=sampling_ratio).iterrows():
-        chunk = {
-            "chunk_id": f"repair_log_r{idx:05d}",
-            "doc_type": "repair_log",
-            "date": row['날짜'],
-            "equipment": row['설비명'],
-            "keywords": extract_keywords(row['고장증상'], row['조치내용']),
-            "text": f"{row['설비명']} {row['고장증상']} {row['조치내용']}",
-            # ...
-        }
-        chunks.append(chunk)
-    save_json(output_json, chunks)
+**`ingest_excel_data.py` — 엑셀 행을 청크로 변환 (`chunk_repair_logs`)**
 
-# index_to_chroma.py (기존 로직 확장)
-def index_all_docs():
-    # PDF 청크 + 엑셀 청크 한번에 색인
-    pdf_chunks = load_merged_json(['merged_ko.json', 'merged_en.json'])
-    excel_chunks = load_excel_json(['repair_logs.json', 'work_standard_*.json'])
-    all_chunks = pdf_chunks + excel_chunks
-    # bge-m3 임베딩 후 Chroma 적재
-```
+| 단계 | 처리 내용 |
+|---|---|
+| 1. 읽기 | `pd.read_excel(xlsx_path)`로 엑셀 전체 로드 |
+| 2. 샘플링 | `df.sample(frac=sampling_ratio)` — 기본 85%만 추림 |
+| 3. 행 → 청크 변환 | 샘플링된 각 행을 아래 필드 매핑대로 청크 딕셔너리로 변환 |
+| 4. 저장 | `output_json`(예: `repair_logs.json`)에 청크 배열로 저장 |
+
+**청크 필드 매핑 (행 → 청크)**
+
+| 청크 필드 | 값 | 출처 |
+|---|---|---|
+| `chunk_id` | `repair_log_r{행 번호:05d}` | 행 인덱스 |
+| `doc_type` | `"repair_log"` | 고정값 |
+| `date` | 행의 날짜 | `날짜` 열 |
+| `equipment` | 행의 설비명 | `설비명` 열 |
+| `keywords` | 추출된 키워드 6개 | `extract_keywords(고장증상, 조치내용)` — 10.1절 참고 |
+| `text` | 검색용 문장 | `{설비명} {고장증상} {조치내용}` 결합 |
+
+**`index_to_chroma.py` — PDF·엑셀 통합 색인 (`index_all_docs`)**
+
+| 단계 | 처리 내용 |
+|---|---|
+| 1. PDF 청크 로드 | `merged_ko.json` + `merged_en.json` |
+| 2. 엑셀 청크 로드 | `repair_logs.json` + `work_standard_*.json` |
+| 3. 병합 | 둘을 하나의 청크 목록으로 합침 |
+| 4. 임베딩·적재 | bge-m3로 벡터화 후 `manual_chunks` 단일 컬렉션에 저장 |
 
 ### 10.4 검색 및 필터링 전략
 
@@ -493,7 +511,9 @@ PDF는 문장 뜻이 비슷하면 맞는 결과지만, 엑셀 수리 이력은 �
 2. **2단계 — 유사도 검색 (하드 필터를 통과한 후보 안에서만):** 증상·조치 설명은 벡터 유사도로 순위를 매긴다.
 3. **3단계 — 가산점 (순위 조정용, 탈락 기준 아님):** 키워드 일치 +0.5, 최근 날짜 +0.1~0.3. 이 점수는 "어느 게 더 위에 오냐"만 정하지, "들어가냐 마냐"는 정하지 않는다.
 
-**UI 키워드 필터 (6개):** 사용자가 설비명 등을 직접 선택하면 그대로 1단계 하드 필터로 쓴다.
+**질의에서 설비명을 "추출"하는 방법 (1단계의 전제조건):** 정규식 추측(`MCT-\d+` 등)은 실제 설비명 패턴이 다양해 깨지기 쉬워 쓰지 않는다. 대신 10.6절 `GET /filters`가 캐싱해 둔 `equipment` 목록(실제 존재하는 설비명 전체)을 가져와, 질의 문자열 안에 그 목록의 값 중 하나가 **부분 문자열로 포함되는지** 확인한다. 포함되면 그 값으로 하드 필터를 걸고, 포함된 게 없으면 하드 필터 없이 전체 `repair_log` 범위에서 유사도만으로 검색한다 (2단계로 바로 진행).
+
+**UI 키워드 필터 (6개):** 사용자가 설비명 등을 직접 선택하면(드롭다운, 13장 참고) 추출 과정 없이 그대로 1단계 하드 필터로 쓴다.
 
 ### 10.5 응답 포맷
 
@@ -554,6 +574,8 @@ PDF 청크는 `/filters`에 포함하지 않는다 (PDF는 책 선택이지 필�
 입력, 뒤로, 예시, 말풍선, 근거, 문서 선택 (탭/필터), 언어 버튼, 관련 제안. 
 `PDF N` = 파일 쪽 (인쇄쪽 아님).
 
+**엑셀 키워드 필터 UI (신규):** 문서 종류 탭에서 `repair_log` 또는 `work_standard`를 선택했을 때만 나타나는 드롭다운 6개(설비명·증상·조치·부위·우선도·담당자) — 근거 패널 상단에 둔다. 옵션 목록은 `GET /filters`(10.6절) 응답으로 채운다. 하나 이상 선택하면 `SearchIn.keywords`에 담아 보내고, 서버는 이를 10.4절의 하드 필터로 쓴다. PDF 선택 시에는 숨긴다(PDF는 책 선택이지 필드 선택이 아니다, 10.6절 원칙과 동일).
+
 ## 14. 별도 기능과 보조 도구
 
 **번역 짝:** PDF 수정 시 `page_align.py` 다시 스캔. 빈 암호 풀기: `.cache/unlocked_manual_1.pdf`.
@@ -588,7 +610,7 @@ cd poc_parsing
 ### 17.1 단계별 합격 조건
 
 **PDF 매뉴얼**
-1. 자료: PDF 청크 753 + 1,595의 합 2,348 + 엑셀 청크 (예상 600~800)의 합이 전체 컬렉션과 일치한다.
+1. 자료: PDF 청크 753 + 1,595의 합 2,348 + 엑셀 청크 (예상 400~800, 0.4절과 동일 기준)의 합이 전체 컬렉션과 일치한다.
 2. 라우팅: 공구경 질문은 한글 원본, 메모리 카드 질문은 영어 원본만 나온다. (PDF 문서 선택)
 3. 종류: “정지화면의 표”는 표 청크만 나온다. 소프트키 화면을 표로 다시 쓰지 않는다.
 4. 그림·표: 자르기가 없는 그림 번호는 그 번호의 글 페이지로 물러나고, 다른 그림으로 대체하지 않는다.
@@ -636,6 +658,28 @@ cd poc_parsing
 
 파일, 라우트, 청크 개수, 번역 짝 캐시 개수를 읽어 작성했다. 이 문서를 쓰는 시점에 대표 질문을 GPU에서 다시 호출하지는 않았다. 실행 재현은 17.1로 따로 확인한다.
 
+### 17.4 파라미터 튜닝 전 테스트 질문 세트 (필수)
+
+**원칙: 정답을 모르면 튜닝이 좋아졌는지 나빠졌는지 판단할 수 없다.** 재순위 가중치(코드 적중×1.2, 번호 적중×1.0 등)나 엑셀 필터 점수를 조정하기 전에, 먼저 "질문 + 정답" 세트를 만들어 둔다.
+
+**세트 구성 (최소 20개 권장):**
+
+| 질문 | 기대 결과 | 확인 항목 |
+|---|---|---|
+| "공구경보정은 어떻게?" | ko 매뉴얼, text 청크 | 책 잠금 |
+| "공구경보정 표 있어?" | `KIND_MISSING` | 표 대체 금지 |
+| "메모리 카드 넣는 법?" | en 매뉴얼 | 주제 전환 |
+| "MCT-3 최근 고장은?" | repair_log, equipment=MCT-3만 | 하드 필터 |
+| (이전 실패 사례 계속 추가) | | |
+
+**사용법:**
+1. 파라미터(가중치, 필터 조건)를 바꾸기 전에 이 세트를 돌려서 기준 점수를 기록한다 (예: 18/20).
+2. 파라미터를 바꾼 뒤 같은 세트를 다시 돌린다.
+3. 점수가 내려가면 — 다른 질문에서 깨진 것이므로 — 되돌리거나 원인을 먼저 찾는다.
+4. 새로 발견한 오류 사례(예: 엉뚱한 표가 나온 경우)는 세트에 바로 추가해 반복되지 않게 한다.
+
+이 세트 없이 감으로 숫자를 조정하면, 한쪽 질문은 고쳐지고 다른 쪽 질문은 모르게 깨지는 일이 반복된다.
+
 ## 18. 참조 자료와 복원 순서
 
 필수 파일 목록은 0.4절(데이터)과 4장(코드)을 그대로 따른다. `chatbot/.env`의 GITC 세 변수는 값을 복사하지 않고 이름만 확인한다.
@@ -659,7 +703,7 @@ cd poc_parsing
 ### 19.2 핵심 자료 색인
 
 **라우팅 및 검색:**
-`SearchIn`, `AskIn`, `search_manual`, `search_by_type`, `choose_document_type`, `choose_lang`, `requested_kind`, `is_followup` (검색): `search_api.py`.
+`SearchIn`, `AskIn`, `search_manual`, `search_by_type`, `choose_document_type`, `choose_lang`, `requested_kind`, `is_followup`, `get_filter_options` (`/filters` 캐싱, 10.6절·0.7절) (검색): `search_api.py`.
 
 **재순위 및 생성:**
 `rank_manual`, `rank_by_type`, `build_prompt`, `call_gitc`, `polish_answer` (생성): `search_api.py`.
@@ -671,7 +715,7 @@ cd poc_parsing
 `pair_for`, `page_align.load` (번역 짝): `page_align.py`. `pack_texts`, `split_overlong` (청킹): `rebuild_originals.py`.
 
 **엑셀 처리:**
-`chunk_repair_logs`, `extract_keywords`, `sample_by_date` (청킹): `ingest_excel_data.py` (신규).
+`chunk_repair_logs`, `extract_keywords` (청킹, 10.1·10.3절): `ingest_excel_data.py` (신규).
 
 **색인:**
 `COLLECTION=manual_chunks` (혼합 색인): `index_to_chroma.py`.
@@ -680,9 +724,4 @@ cd poc_parsing
 
 **PDF 측정 (기존):** 청크 ko 753 + en 1,595 = 2,348개. 번역 짝 ko 391 + en 534 = 925개. 실도판 0개. 캐시 버전 3.
 
-**엑셀 측정 (예상):** 
-- 설비 수리 보고서: 행 5,000~10,000, 샘플링 85%, 예상 청크 400~600
-- 작업표준서 (2종): 절차 200~400, 예상 청크 150~300
-- 전체 청크 합계 (예상): 2,348 + 600 = 약 2,948개
-
-이 버전은 아직 코드 구현 전이다. 엑셀 처리 로직(`ingest_excel_data.py`)과 라우팅 개선(`choose_document_type`)은 재구현 단계에서 추가된다. 대표 질문의 신규 실행 검증은 코드 구현 후 진행한다.
+이 버전은 아직 코드 구현 전이다. 엑셀 처리 로직(`ingest_excel_data.py`)과 라우팅 개선(`choose_document_type`)은 재구현 단계에서 추가된다. 엑셀 청크 개수는 실제 색인 후 측정해서 이 절에 추가한다. 대표 질문의 신규 실행 검증은 코드 구현 후 진행한다.
