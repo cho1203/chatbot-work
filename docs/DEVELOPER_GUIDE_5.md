@@ -2,9 +2,9 @@
 
 작성일: 2026-10-01  
 기준: `/home/ohsem/chatbot/poc_parsing` 현재 코드 (FANUC 매뉴얼 구조 기반)  
-대상: 삼광 FANUC 매뉴얼 2종 + 설비 수리 보고서 + 작업표준서 통합 챗봇, Chroma 벡터 DB, bge-m3 임베딩, GITC 추론, 정적 화면과 FastAPI 전달 계층
+대상: 삼광 FANUC 매뉴얼 2종 + 설비 수리 보고서 + 작업표준서 통합 챗봇, pgvector(PostgreSQL) 벡터 저장소, bge-m3 임베딩, GITC 추론, 정적 화면과 FastAPI 전달 계층
 
-이 문서는 현장 작업자용 설비 문제 해결 챗봇을 구현하는 명세다. 기존 FANUC 매뉴얼 챗봇 아키텍처(POC 파싱)를 기반으로 PDF 매뉴얼, 엑셀 설비 수리 이력, 작업표준서를 하나의 벡터 DB에 통합한다.
+이 문서는 현장 작업자용 설비 문제 해결 챗봇을 구현하는 명세다. 기존 FANUC 매뉴얼 챗봇 아키텍처(POC 파싱)를 기반으로 PDF 매뉴얼, 엑셀 설비 수리 이력, 작업표준서를 하나의 pgvector(PostgreSQL) 테이블에 통합한다.
 
 ## 0. 전체 구현 개요 및 상세 아키텍처
 
@@ -15,13 +15,13 @@
 2. **설비 수리 보고서** (엑셀)에서 고장 이력·조치 찾기
 3. **작업표준서** (엑셀)에서 점검·정비 절차 찾기
 
-FastAPI가 PDF와 엑셀 청크를 Chroma (bge-m3)에 색인하고, GITC가 설명만 생성한다. 보여주기 질의는 GITC를 부르지 않는다.
+FastAPI가 PDF와 엑셀 청크를 pgvector(bge-m3)에 색인하고, GITC가 설명만 생성한다. 보여주기 질의는 GITC를 부르지 않는다.
 
 | 목적 | 입력 | 처리 | 결과 |
 |---|---|---|---|
 | 질문 | 질의, 직전 질의 | 질의 라우팅→임베딩 검색→재순위→생성 분기 | JSON 답변, 출처 쪽, 관련 그림·표 |
 | 근거 | 같은 질의 | 같은 검색 후 카드 항목으로 변환 | 페이지 이미지, 미리보기, 번역 짝 |
-| 색인 준비 | 원본 PDF 두 권 (번역 2권은 비색인) | 추출→청킹→임베딩→Chroma | `manual_chunks` 2,348개 |
+| 색인 준비 | 원본 PDF 두 권 (번역 2권은 비색인) | 추출→청킹→임베딩→pgvector | `manual_chunks` 2,348개 |
 | 언어 전환 | 이미 찾은 원본 파일 쪽 | 번역 PDF의 원본 쪽 표시로 짝 조회 | 번역 글과 번역 파일 쪽. 재검색 없음 |
 
 ### 0.2 구현을 구성하는 계층 구조
@@ -30,7 +30,7 @@ FastAPI가 PDF와 엑셀 청크를 Chroma (bge-m3)에 색인하고, GITC가 설�
 flowchart TB
   U["정적 화면 index.html"] --> A["FastAPI REST"]
   A --> R["질의 라우팅·문서 종류 선택·검색·재순위·생성"]
-  R --> V[("Chroma manual_chunks 단일 컬렉션")]
+  R --> V[("PostgreSQL pgvector manual_chunks 테이블")]
   R --> G["GITC 또는 local 로컬 Qwen"]
   A --> P["page_align 번역 짝 PDF만"]
 
@@ -46,18 +46,18 @@ flowchart TB
   S -. 운영 .-> G
 ```
 
-화면(`index.html`) → FastAPI → 라우팅·검색·생성(`search_api.py`) → Chroma + GITC. 시작 로그에서 모델 device, 컬렉션 개수, 번역 짝, `LLM: API gitc`를 확인한다.
+화면(`index.html`) → FastAPI → 라우팅·검색·생성(`search_api.py`) → pgvector + GITC. 시작 로그에서 모델 device, 테이블 행 개수, 번역 짝, `LLM: API gitc`를 확인한다.
 
 ### 0.3 실행 프로세스와 배포 구조
 
 | 프로세스 | 코드 기준 | 역할 |
 |---|---|---|
 | FastAPI | `search_api.py` 실행부, local(로컬) 8155 포트 | 화면·PDF·검색·답변 |
-| 임베딩 | 시작 시 `SentenceTransformer("BAAI/bge-m3")` | 질의 벡터. 청크 벡터는 이미 Chroma에 있음 |
+| 임베딩 | 시작 시 `SentenceTransformer("BAAI/bge-m3")` | 질의 벡터. 청크 벡터는 이미 pgvector 테이블에 있음 |
 | 생성 | `call_gitc`. 키가 없을 때만 local(로컬) Qwen | 설명 답 한 갈래 |
 | 페이지 정렬 | `page_align.load` | 번역 짝 캐시 |
 
-포트 8155, 컬렉션 `manual_chunks`는 `search_api.py`와 `index_to_chroma.py`에 고정이다. 같은 포트에 중복 기동 불가.
+포트 8155, 테이블 이름 `manual_chunks`는 `search_api.py`와 `index_to_pgvector.py`에 고정이다. 같은 포트에 중복 기동 불가.
 
 ### 0.4 전체 데이터와 RAG 저장 구조
 
@@ -71,7 +71,7 @@ flowchart TB
 | `data/samkwang/manual_2_ko.pdf` | manual_1_en의 한글 번역 (지원 문서) | 색인 안 함. 언어 전환 버튼에서만 사용 |
 | `poc_parsing/merged_ko.json` | 한글 원본 청크 (manual_1_ko) | 753개. text, table, figure |
 | `poc_parsing/merged_en.json` | 영어 원본 청크 (manual_1_en) | 1,595개. text, table, figure, ui_screen |
-| `poc_parsing/chroma_db` | `manual_chunks`, cosine, 2,348+ 벡터 | PDF 청크 임베딩 |
+| PostgreSQL `manual_chunks` 테이블 (`.env`의 `DATABASE_URL`로 접속) | `embedding vector(1024)` 컬럼 + HNSW 인덱스(`vector_cosine_ops`), 2,348+ 행 | PDF 청크 임베딩 |
 
 **엑셀 데이터 (신규, 색인 대상: 예상 400~800 청크)**
 
@@ -99,8 +99,8 @@ sequenceDiagram
   participant D as 개발자
   participant B as rebuild_originals.py
   participant J as merged_ko.json / merged_en.json
-  participant I as index_to_chroma.py
-  participant V as Chroma
+  participant I as index_to_pgvector.py
+  participant V as PostgreSQL
   D->>B: 원본 PDF 두 권 입력 실행
   B->>B: 샘플 그림·표·화면은 유지, 나머지 쪽은 텍스트 추출·청킹
   B->>J: 조각과 110 dpi 페이지 이미지 저장
@@ -118,8 +118,8 @@ sequenceDiagram
   participant D as 개발자
   participant E as ingest_excel_data.py
   participant X as repair_logs.json / work_standard_*.json
-  participant I as index_to_chroma.py
-  participant V as Chroma
+  participant I as index_to_pgvector.py
+  participant V as PostgreSQL
   D->>E: 엑셀 3종 입력 실행
   E->>E: 행·절차 읽기, 키워드 6개 추출, 80~90% 샘플링
   E->>X: 청크 JSON 저장
@@ -128,7 +128,7 @@ sequenceDiagram
   I->>V: manual_chunks에 PDF 청크와 함께 적재
 ```
 
-PDF와 같은 패턴이다: `ingest_excel_data.py`가 엑셀을 읽어 `repair_logs.json`(수리 보고서), `work_standard_*.json`(작업표준서)을 만들고, 같은 `index_to_chroma.py`가 PDF 청크와 함께 `manual_chunks`에 적재한다. `repair_chunks` 같은 별도 컬렉션은 쓰지 않는다. 상세 처리 로직은 10.3절 참고.
+PDF와 같은 패턴이다: `ingest_excel_data.py`가 엑셀을 읽어 `repair_logs.json`(수리 보고서), `work_standard_*.json`(작업표준서)을 만들고, 같은 `index_to_pgvector.py`가 PDF 청크와 함께 `manual_chunks` 테이블에 적재한다. `repair_chunks` 같은 별도 테이블은 쓰지 않는다. 상세 처리 로직은 10.3절 참고.
 
 ### 0.6 질문 한 건의 실행 순서
 
@@ -137,13 +137,14 @@ sequenceDiagram
   participant U as index.html
   participant A as FastAPI
   participant Q as 질의 라우팅
-  participant V as Chroma
+  participant V as PostgreSQL
   participant G as 생성 분기
   U->>A: POST /ask 와 POST /search 를 동시에
   A->>Q: is_followup, choose_document_type, choose_lang, requested_kind
   Q->>Q: 문서 종류 선택: manual | repair_log | work_standard
-  Q->>V: 질의 임베딩, 문서 필터, cosine, 키워드 보강
-  V-->>Q: 후보 청크 (문서별로 정렬)
+  Q->>V: SQL WHERE 문서 필터 조건 더하기 ORDER BY embedding 코사인거리
+  V-->>Q: 후보 청크 (메타데이터 포함, 문서별로 정렬됨)
+  Q->>Q: 키워드 보강
   Q-->>G: rank_manual 상위 3개 (또는 repair_log_rank)
   G-->>U: 답 JSON
   A-->>U: 근거 카드 JSON
@@ -157,7 +158,7 @@ sequenceDiagram
 
 | 상태 | 생성·소유 | 소비 | 경계 |
 |---|---|---|---|
-| 청크 본문, `lang`, `page`, `chunk_type`, 벡터 | `rebuild_originals.py` → `index_to_chroma.py` | Chroma, 검색, 화면 | 벡터 차원은 `bge-m3`와 일치 |
+| 청크 본문, `lang`, `page`, `chunk_type`, 벡터 | `rebuild_originals.py` → `index_to_pgvector.py` | pgvector 테이블, 검색, 화면 | 벡터 차원은 `bge-m3`와 일치 |
 | `prior_query` | 브라우저의 직전 사용자 문장 (필수, 없으면 실패) | `is_followup`, 책/문서 락 | 서버 세션 저장소 없음, 브라우저만 추적 |
 | 번역 짝 `page`, `text`, `has_graphic` | `page_align.py` | `to_item` | 파일 쪽 번호 일치를 짝으로 쓰지 않음 |
 | 선택 API | 시작 시 `selected_api` | `call_llm` | `GITC_API_KEY`가 있으면 GITC 고정 |
@@ -167,7 +168,7 @@ sequenceDiagram
 
 | 상태 | 생성·소유 | 소비 | 경계 |
 |---|---|---|---|
-| 엑셀 청크, 메타데이터, `doc_type`, 벡터 | `ingest_excel_data.py` → `index_to_chroma.py` | Chroma, 검색, 화면 | bge-m3 임베딩, doc_type으로 필터 |
+| 엑셀 청크, 메타데이터, `doc_type`, 벡터 | `ingest_excel_data.py` → `index_to_pgvector.py` | pgvector 테이블, 검색, 화면 | bge-m3 임베딩, doc_type으로 필터 |
 | 키워드 필터 선택 | 브라우저 UI (document_type, keywords) | `search_by_type` | 선택사항, 없으면 자동 감지 |
 | 필터 캐시 | `get_filter_options` 시작 시 | UI 드롭다운 렌더 | 엑셀 행 메타데이터에서 추출 |
 | 샘플링 비율 | `ingest_excel_data.py` 상수 (0.85) | 색인 시점 | 검색은 전체 원본 이력 참조 |
@@ -178,7 +179,7 @@ sequenceDiagram
 
 ### 0.9 재구현 순서
 
-PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → (PDF만) 페이지 정렬 → 라우팅 → 재순위 → 생성 → 화면. 색인까지는 PDF/엑셀이 따로 가고, 그 이후는 같은 파이프라인을 공유한다.
+PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 pgvector 색인 → (PDF만) 페이지 정렬 → 라우팅 → 재순위 → 생성 → 화면. 색인까지는 PDF/엑셀이 따로 가고, 그 이후는 같은 파이프라인을 공유한다.
 
 ## 1. 문서의 목적과 사용법
 
@@ -186,9 +187,9 @@ PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → 
 
 ## 2. 기준 자료와 재현 범위
 
-기준 구현: `search_api.py`, `page_align.py`, `rebuild_originals.py`, `ingest_excel_data.py`, `index_to_chroma.py`, `static/index.html`, PDF 4권, 엑셀 3종, `merged_*.json`, `repair_logs.json`, `chroma_db`, `.env`.
+기준 구현: `search_api.py`, `page_align.py`, `rebuild_originals.py`, `ingest_excel_data.py`, `index_to_pgvector.py`, `static/index.html`, PDF 4권, 엑셀 3종, `merged_*.json`, `repair_logs.json`, PostgreSQL `manual_chunks` 테이블, `.env`.
 
-재현: PDF, 엑셀, 청크 JSON, Chroma, bge-m3, GITC 키 필요. 키 값은 출력하지 않는다.
+재현: PDF, 엑셀, 청크 JSON, PostgreSQL(pgvector 확장), bge-m3, GITC 키 필요. 키 값은 출력하지 않는다.
 
 ## 3. 제품 기능과 사용자 흐름
 
@@ -202,11 +203,11 @@ PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → 
 
 ### 3.2 문서 적재와 색인
 
-**PDF:** 관리자가 원본 PDF를 `data/samkwang/`에 두고 `rebuild_originals.py`로 조각을 만든 뒤, 조각이 바뀌었을 때만 `index_to_chroma.py`를 실행한다.
+**PDF:** 관리자가 원본 PDF를 `data/samkwang/`에 두고 `rebuild_originals.py`로 조각을 만든 뒤, 조각이 바뀌었을 때만 `index_to_pgvector.py`를 실행한다.
 
-**엑셀:** 관리자가 엑셀을 `data/samkwang/`에 두고 `ingest_excel_data.py`로 청크와 키워드를 뽑은 뒤, 동일 `index_to_chroma.py`로 통합 색인한다.
+**엑셀:** 관리자가 엑셀을 `data/samkwang/`에 두고 `ingest_excel_data.py`로 청크와 키워드를 뽑은 뒤, 동일 `index_to_pgvector.py`로 통합 색인한다.
 
-실행 중 업로드 API, 온라인 재학습 API, 문서 삭제 API는 없다. 엑셀 파일이 변경되면 항상 `ingest_excel_data.py`를 먼저 실행하고 `index_to_chroma.py`를 실행한다.
+실행 중 업로드 API, 온라인 재학습 API, 문서 삭제 API는 없다. 엑셀 파일이 변경되면 항상 `ingest_excel_data.py`를 먼저 실행하고 `index_to_pgvector.py`를 실행한다.
 
 ### 3.3 검색·이미지·언어
 
@@ -232,7 +233,7 @@ PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → 
 
 ## 4. 아키텍처와 파일 책임
 
-데이터 파일(PDF, 엑셀, 청크 JSON, Chroma)의 위치·개수는 0.4절을 따른다. 여기서는 **코드 파일이 각각 뭘 하는지**만 다룬다.
+데이터 파일(PDF, 엑셀, 청크 JSON, pgvector)의 위치·개수는 0.4절을 따른다. 여기서는 **코드 파일이 각각 뭘 하는지**만 다룬다.
 
 | 파일 | 책임 |
 |---|---|
@@ -240,11 +241,11 @@ PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → 
 | `poc_parsing/page_align.py` | PDF 번역 짝 생성·캐시 (원본 쪽 표시) |
 | `poc_parsing/rebuild_originals.py` | PDF 텍스트 청킹, 샘플 그림·표 유지, 110 dpi 렌더 |
 | `poc_parsing/ingest_excel_data.py` (신규) | 엑셀 청킹, 키워드 6개 추출, 80~90% 샘플링 |
-| `poc_parsing/index_to_chroma.py` | PDF + 엑셀 청크 임베딩, Chroma 색인 적재 (전체 교체) |
+| `poc_parsing/index_to_pgvector.py` | PDF + 엑셀 청크 임베딩, pgvector 테이블 적재 (전체 교체) |
 | `poc_parsing/static/index.html` | 대화 UI, 근거 패널, 언어/문서 종류 전환, 필터 |
 | `chatbot/.env` | `GITC_API_KEY`, `GITC_BASE_URL`, `GITC_MODEL` |
 
-**미사용 (이전 실험):** `run_docling.py`, `normalize.py`, `ingest_full_manuals.py` — 현재 파이프라인 아님. `.env`의 포트 8787, 컬렉션 `fanuc_manuals`도 실제 설정과 다름 (8155, `manual_chunks` 사용).
+**미사용 (이전 실험):** `run_docling.py`, `normalize.py`, `ingest_full_manuals.py` — 현재 파이프라인 아님. `.env`의 포트 8787, 테이블 이름 `fanuc_manuals`도 실제 설정과 다름 (8155, `manual_chunks` 사용).
 
 ## 5. 데이터 계약
 
@@ -257,7 +258,7 @@ PDF 청킹(0.5절) + 엑셀 청킹(0.5b절, 10장) → 통합 Chroma 색인 → 
 - `page`는 PDF 뷰어에 치는 파일 쪽이지 인쇄 하단 쪽 번호가 아니다. 
 - `section_path`는 현재 빈 배열이라 장 제목 필터로 쓸 수 없다.
 
-Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `table`은 HTML 태그를 뺀 글, `figure`와 `ui_screen`은 `note`와 본문이다. 빈 그림 캡션을 추측해 채우지 않는다. 메타데이터의 중첩 객체는 JSON 문자열이고 `image_path`만 평탄화한다. 거리 공간은 `hnsw:space=cosine`이다.
+pgvector 벡터로 변환하는 검색 문장은 종류마다 다르다. `text`는 `text`, `table`은 HTML 태그를 뺀 글, `figure`와 `ui_screen`은 `note`와 본문이다. 빈 그림 캡션을 추측해 채우지 않는다. 메타데이터는 `manual_chunks` 테이블의 일반 컬럼(중첩 객체는 `jsonb` 컬럼)에 벡터와 **같은 행**으로 저장한다 — pgvector는 PostgreSQL의 평범한 테이블이라 중첩 객체를 JSON 문자열로 평탄화할 필요 없이 `jsonb`에 그대로 넣을 수 있다. 거리 계산은 정규화된 벡터의 코사인 거리 연산자(`<=>`, `vector_cosine_ops` HNSW 인덱스)를 쓴다.
 
 ### 5.1b 검색 레코드 — 엑셀 청크 (신규)
 
@@ -470,7 +471,7 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 
 **출력:** `poc_parsing/work_standard_mct.json`, `poc_parsing/work_standard_tools.json`
 
-### 10.3 색인 및 Chroma 적재
+### 10.3 색인 및 pgvector 적재
 
 **`ingest_excel_data.py` — 엑셀 행을 청크로 변환 (`chunk_repair_logs`)**
 
@@ -492,14 +493,16 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 | `keywords` | 추출된 키워드 6개 | `extract_keywords(고장증상, 조치내용)` — 10.1절 참고 |
 | `text` | 검색용 문장 | `{설비명} {고장증상} {조치내용}` 결합 |
 
-**`index_to_chroma.py` — PDF·엑셀 통합 색인 (`index_all_docs`)**
+**`index_to_pgvector.py` — PDF·엑셀 통합 색인 (`index_all_docs`)**
 
 | 단계 | 처리 내용 |
 |---|---|
 | 1. PDF 청크 로드 | `merged_ko.json` + `merged_en.json` |
 | 2. 엑셀 청크 로드 | `repair_logs.json` + `work_standard_*.json` |
 | 3. 병합 | 둘을 하나의 청크 목록으로 합침 |
-| 4. 임베딩·적재 | bge-m3로 벡터화 후 `manual_chunks` 단일 컬렉션에 저장 |
+| 4. 임베딩·적재 | bge-m3로 벡터화 후 `manual_chunks` 테이블에 **벡터와 메타데이터를 한 행으로** INSERT (전체 교체: 적재 전 `TRUNCATE manual_chunks`) |
+
+pgvector는 PostgreSQL의 평범한 테이블이라, 벡터(`embedding` 컬럼)와 본문·메타데이터(`text`, `chunk_type`, `page`, `doc_type`, `equipment` 등 일반 컬럼 + `jsonb`)가 **같은 행**에 같이 들어간다. 그래서 FAISS 때처럼 벡터 ID와 메타데이터를 따로 조회할 필요가 없다 — 검색 쿼리 한 번이 메타데이터까지 전부 포함한 행을 그대로 돌려준다.
 
 ### 10.4 검색 및 필터링 전략
 
@@ -507,9 +510,11 @@ Chroma에 넣는 검색 문장은 종류마다 다르다. `text`는 `text`, `tab
 
 PDF는 문장 뜻이 비슷하면 맞는 결과지만, 엑셀 수리 이력은 다르다. "MCT-3 고장은?"에서 유사도만 쓰면 MCT-4, MCT-5 이력도 "비슷하다"고 섞여 나올 수 있다. 설비명처럼 정확히 일치해야 하는 값은 **먼저 필수 조건(하드 필터)으로 걸러내고, 그 안에서만** 유사도로 순위를 매긴다.
 
-1. **1단계 — 하드 필터 (정확 일치, 틀리면 탈락):** 질의에서 설비명이 추출되면 `equipment == 'MCT-3'`인 행만 후보로 남긴다. 틀린 설비는 점수와 무관하게 후보에서 제외한다.
-2. **2단계 — 유사도 검색 (하드 필터를 통과한 후보 안에서만):** 증상·조치 설명은 벡터 유사도로 순위를 매긴다.
-3. **3단계 — 가산점 (순위 조정용, 탈락 기준 아님):** 키워드 일치 +0.5, 최근 날짜 +0.1~0.3. 이 점수는 "어느 게 더 위에 오냐"만 정하지, "들어가냐 마냐"는 정하지 않는다.
+**pgvector는 SQL이라 하드 필터와 유사도 검색을 한 쿼리에서 같이 한다.** `WHERE` 절(하드 필터)과 `ORDER BY embedding <=> 질의벡터`(유사도)를 같은 SQL 문에 쓰면, PostgreSQL이 먼저 `WHERE`로 후보를 좁히고 그 안에서만 벡터 거리를 계산해 정렬한다 — Chroma의 `where` 조건과 동일한 효과를, FAISS에서 썼던 "메모리에서 먼저 필터링 후 넘파이로 재계산"하는 우회 없이 낸다.
+
+1. **1단계 — 하드 필터 (`WHERE`, 정확 일치, 틀리면 탈락):** 질의에서 설비명이 추출되면 `WHERE equipment = 'MCT-3'`를 쿼리에 더한다.
+2. **2단계 — 유사도 검색 (`ORDER BY`, 1단계로 좁힌 행 안에서만):** `ORDER BY embedding <=> 질의벡터 LIMIT top_k`로 같은 쿼리 안에서 순위를 매긴다. 설비명이 추출되지 않아 1단계 조건이 없으면, `WHERE doc_type='repair_log'`만 걸고 전체 범위에서 유사도로 검색한다.
+3. **3단계 — 가산점 (순위 조정용, 탈락 기준 아님):** 키워드 일치 +0.5, 최근 날짜 +0.1~0.3. SQL로 가져온 상위 후보에 애플리케이션 코드에서 추가 점수만 더한다. 이 점수는 "어느 게 더 위에 오냐"만 정하지, "들어가냐 마냐"는 정하지 않는다.
 
 **질의에서 설비명을 "추출"하는 방법 (1단계의 전제조건):** 정규식 추측(`MCT-\d+` 등)은 실제 설비명 패턴이 다양해 깨지기 쉬워 쓰지 않는다. 대신 10.6절 `GET /filters`가 캐싱해 둔 `equipment` 목록(실제 존재하는 설비명 전체)을 가져와, 질의 문자열 안에 그 목록의 값 중 하나가 **부분 문자열로 포함되는지** 확인한다. 포함되면 그 값으로 하드 필터를 걸고, 포함된 게 없으면 하드 필터 없이 전체 `repair_log` 범위에서 유사도만으로 검색한다 (2단계로 바로 진행).
 
@@ -563,9 +568,9 @@ PDF 청크는 `/filters`에 포함하지 않는다 (PDF는 책 선택이지 필�
 
 ## 12. LLM, 모델 관리와 동시성
 
-질의 임베딩은 `sentence-transformers`와 PyTorch다. 장치 로그가 `cuda:0`이면 GPU를 쓴다. 청크 임베딩과 질의 임베딩은 같은 `BAAI/bge-m3`이고 `normalize_embeddings=True`다. 모델을 바꾸면 저장된 벡터와 질의 벡터의 공간이 어긋나므로, `index_to_chroma.py`로 컬렉션을 반드시 다시 만든다.
+질의 임베딩은 `sentence-transformers`와 PyTorch다. 장치 로그가 `cuda:0`이면 GPU를 쓴다. 청크 임베딩과 질의 임베딩은 같은 `BAAI/bge-m3`이고 `normalize_embeddings=True`다. 모델을 바꾸면 저장된 벡터와 질의 벡터의 공간이 어긋나므로, `index_to_pgvector.py`로 테이블을 반드시 다시 만든다.
 
-생성은 프로세스 안에서 동기 HTTP다. 워커 풀과 토큰 스트림은 없다. 질문 하나가 `/ask`에서 GITC를 최대 한 번 호출한다. `/search`는 생성 모델을 부르지 않는다. 첫 기동은 임베딩 로드와 컬렉션 open이 끝난 뒤에야 포트를 받는다. 준비 전 헬스 전용 라우트는 없다.
+생성은 프로세스 안에서 동기 HTTP다. 워커 풀과 토큰 스트림은 없다. 질문 하나가 `/ask`에서 GITC를 최대 한 번 호출한다. `/search`는 생성 모델을 부르지 않는다. 첫 기동은 임베딩 로드와 PostgreSQL 연결 확인이 끝난 뒤에야 포트를 받는다. 준비 전 헬스 전용 라우트는 없다.
 
 동시 요청은 Uvicorn 기본 처리에 맡긴다. 대화 잠금은 브라우저가 전송 중에 입력을 막는 수준이다. 서버는 턴 번호를 알지 못한다.
 
@@ -579,17 +584,17 @@ PDF 청크는 `/filters`에 포함하지 않는다 (PDF는 책 선택이지 필�
 ## 14. 별도 기능과 보조 도구
 
 **번역 짝:** PDF 수정 시 `page_align.py` 다시 스캔. 빈 암호 풀기: `.cache/unlocked_manual_1.pdf`.
-**미사용:** Docling, ingest_full_manuals.py, CHROMA_COLLECTION=fanuc_manuals (사용: manual_chunks).
+**미사용:** Docling, ingest_full_manuals.py, PG_TABLE=fanuc_manuals (사용: PG_TABLE=manual_chunks).
 
 ## 15. 누락 자산 복원 설계
 
 ### 15.1 원본과 모델 준비
 
-복원 목록은 원본 PDF 두 권, 번역 PDF 두 권, `bge-m3` 캐시 또는 다운로드, GITC 키·베이스 URL·모델 이름이다. 외부에서 받은 Chroma 디렉터리는 청크 파일·모델과 같은 버전일 때만 연다.
+복원 목록은 원본 PDF 두 권, 번역 PDF 두 권, `bge-m3` 캐시 또는 다운로드, GITC 키·베이스 URL·모델 이름이다. 외부에서 받은 PostgreSQL 백업(`pg_dump` 덤프)은 청크 파일·모델과 같은 버전일 때만 복원한다.
 
-### 15.2 인덱스 재구축
+### 15.2 테이블 재구축
 
-조각 JSON을 유지한 채 벡터만 다시 만들 때는 `index_to_chroma.py`만 실행한다. 이 스크립트는 기존 `manual_chunks`를 삭제한다. PDF부터 다시 조각을 만들 때는 `rebuild_originals.py` 다음에 색인 스크립트를 실행한다. 샘플 그림·표 쪽 목록을 바꾸면 그 쪽의 기존 자르기가 빠지거나 글 청크와 겹칠 수 있으므로 별도 사본에서 먼저 확인한다.
+조각 JSON을 유지한 채 벡터만 다시 만들 때는 `index_to_pgvector.py`만 실행한다. 이 스크립트는 기존 `manual_chunks` 테이블을 비운다(`TRUNCATE`). PDF부터 다시 조각을 만들 때는 `rebuild_originals.py` 다음에 색인 스크립트를 실행한다. 샘플 그림·표 쪽 목록을 바꾸면 그 쪽의 기존 자르기가 빠지거나 글 청크와 겹칠 수 있으므로 별도 사본에서 먼저 확인한다.
 
 ### 15.3 재구축 판정
 
@@ -600,7 +605,7 @@ PDF 청크는 `/filters`에 포함하지 않는다 (PDF는 책 선택이지 필�
 ```bash
 cd poc_parsing
 ./venv/bin/python search_api.py  # local(로컬) 8155 포트로 접속
-./venv/bin/python index_to_chroma.py  # 청크 JSON 변경 후만 실행
+./venv/bin/python index_to_pgvector.py  # 청크 JSON 변경 후만 실행
 ```
 
 보존: PDF, venv, HF 캐시. 금지: 키 전송, 8155 중복 기동.
@@ -610,7 +615,7 @@ cd poc_parsing
 ### 17.1 단계별 합격 조건
 
 **PDF 매뉴얼**
-1. 자료: PDF 청크 753 + 1,595의 합 2,348 + 엑셀 청크 (예상 400~800, 0.4절과 동일 기준)의 합이 전체 컬렉션과 일치한다.
+1. 자료: PDF 청크 753 + 1,595의 합 2,348 + 엑셀 청크 (예상 400~800, 0.4절과 동일 기준)의 합이 `manual_chunks` 테이블의 전체 행 수와 일치한다.
 2. 라우팅: 공구경 질문은 한글 원본, 메모리 카드 질문은 영어 원본만 나온다. (PDF 문서 선택)
 3. 종류: “정지화면의 표”는 표 청크만 나온다. 소프트키 화면을 표로 다시 쓰지 않는다.
 4. 그림·표: 자르기가 없는 그림 번호는 그 번호의 글 페이지로 물러나고, 다른 그림으로 대체하지 않는다.
@@ -689,7 +694,7 @@ cd poc_parsing
 1. PDF 원본 4권, 엑셀 원본 3종 확인 (`data/samkwang/`)
 2. 조각 JSON 확인 (`merged_*.json` + `repair_logs.json` + `work_standard_*.json`)
 3. 엑셀 청킹 재실행 (데이터 변경 시): `python ingest_excel_data.py`
-4. 색인 재적재: `python index_to_chroma.py`
+4. 색인 재적재: `python index_to_pgvector.py`
 5. `.env`의 GITC 세 변수 확인
 6. `search_api.py` 단일 기동: `python search_api.py`
 7. 17.1~17.2 검증 질문 실행
@@ -718,7 +723,7 @@ cd poc_parsing
 `chunk_repair_logs`, `extract_keywords` (청킹, 10.1·10.3절): `ingest_excel_data.py` (신규).
 
 **색인:**
-`COLLECTION=manual_chunks` (혼합 색인): `index_to_chroma.py`.
+`PG_TABLE=manual_chunks` (혼합 색인): `index_to_pgvector.py`.
 
 ### 19.3 검증 기록
 
