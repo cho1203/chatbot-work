@@ -31,7 +31,7 @@ flowchart TB
   U["정적 화면 index.html"] --> A["FastAPI REST"]
   A --> R["질의 라우팅·문서 종류 선택·검색·재순위·생성"]
   R --> V[("PostgreSQL pgvector manual_chunks 테이블")]
-  R --> G["GITC 또는 local 로컬 Qwen"]
+  R --> G["GITC"]
   A --> P["page_align 번역 짝 PDF만"]
 
   PDF["PDF 원본 2종"] --> PDFE["bge-m3 임베딩"]
@@ -54,7 +54,7 @@ flowchart TB
 |---|---|---|
 | FastAPI | `search_api.py` 실행부, local(로컬) 8155 포트 | 화면·PDF·검색·답변 |
 | 임베딩 | 시작 시 `SentenceTransformer("BAAI/bge-m3")` | 질의 벡터. 청크 벡터는 이미 pgvector 테이블에 있음 |
-| 생성 | `call_gitc`. 키가 없을 때만 local(로컬) Qwen | 설명 답 한 갈래 |
+| 생성 | `call_gitc`. GITC로만 쓰기로 확정, 로컬 대체 없음 | 설명 답 한 갈래 |
 | 페이지 정렬 | `page_align.load` | 번역 짝 캐시 |
 
 포트 8155, 테이블 이름 `manual_chunks`는 `search_api.py`와 `index_to_pgvector.py`에 고정이다. 같은 포트에 중복 기동 불가.
@@ -404,9 +404,9 @@ pgvector 벡터로 변환하는 검색 문장은 종류마다 다르다. `text`�
 
 금지: 두 책 혼합, 없는 순서·숫자·표, 가짜 설명, `발췌`, 쪽 번호.
 
-### 8.3 런타임 전환
+### 8.3 생성 모델 설정
 
-`GITC_API_KEY`가 있으면 GITC(`hyperclovax-seed-32b`, temperature 0.2, 제한 시간 60초)를 쓰고, 없으면 local(로컬) `Qwen/Qwen2.5-1.5B-Instruct` 4bit로 대체한다. `GITC_BASE_URL` 또는 `GITC_MODEL`이 비어 있으면 시작 로그로 알리고, 실제 설명 질문에서 500이 난다.
+GITC(`hyperclovax-seed-32b`, temperature 0.2, 제한 시간 60초)로만 쓰기로 확정했다 — 로컬 대체 모델은 없다. `GITC_API_KEY`·`GITC_BASE_URL`·`GITC_MODEL`이 비어 있으면 시작 로그로 알리고, 실제 설명 질문에서 500이 난다.
 
 ## 9. 검증과 오류 처리
 
