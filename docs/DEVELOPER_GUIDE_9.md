@@ -49,17 +49,21 @@ GITC 호출 형식·VLM 실체 둘 다 "쓸지 말지"가 아니라 "어느 서�
 
 ### 0.1 계층 구조
 
+입력 데이터는 **UI 탭 3개(매뉴얼/작업지시서/고장수리내역, 1.6절)와 1:1로 대응하는 3개 갈래**다 — 매뉴얼은 PDF 4개 파일(원본 한글·영어 + 번역 한글·영어) 묶음 하나, 작업지시서와 고장수리내역은 서로 다른 엑셀 파일이라 완전히 분리된 갈래다. 아래 그림의 ①②③이 그 3개 갈래다.
+
 ```mermaid
 flowchart TB
-  U["정적 화면 index.html"] --> A["FastAPI REST"]
+  U["정적 화면 index.html (탭 3개: 매뉴얼/작업지시서/고장수리내역)"] --> A["FastAPI REST"]
   A --> R["질의 라우팅·문서 종류 선택·검색·재순위·생성"]
   R --> V[("PostgreSQL pgvector manual_chunks 테이블")]
   R --> G["GITC"]
   A --> P["page_align 번역 짝 PDF만"]
 
-  PDF["PDF 원본 2종"] --> PDFE["bge-m3 임베딩"]
-  PDF2["PDF 번역 2종"] --> P
-  EXCEL["엑셀 3종 수리보고서 표준서"] --> EXCE["라벨 기반 파싱 임베딩"]
+  PDF["① 매뉴얼: PDF 4개 파일<br/>(원본 한글·영어 + 번역 한글·영어)"] --> PDFE["bge-m3 임베딩(원본 2종이 색인 대상)"]
+  PDF --> P
+
+  XLSX1["② 작업지시서 엑셀(work_standard)"] --> EXCE["라벨 기반 파싱 임베딩"]
+  XLSX2["③ 고장수리내역 엑셀(repair_log)"] --> EXCE
 
   PDFE --> V
   EXCE --> V
@@ -155,7 +159,7 @@ sequenceDiagram
   participant X as repair_logs.json / work_standard_*.json
   participant I as index_to_pgvector.py
   participant V as PostgreSQL
-  D->>E: 엑셀 3종 입력 실행
+  D->>E: 엑셀 파일 3개 입력 실행(작업지시서 2개 + 고장수리내역 1개, 범주는 2종)
   E->>E: 시트 전수 순회, 고정 라벨 텍스트로 옆·아래 셀 값 추출 (행 읽기·샘플링 아님)
   E->>X: 시트별 청크 JSON 저장
   D->>I: PDF 조각과 함께 색인 실행

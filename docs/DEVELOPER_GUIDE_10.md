@@ -32,7 +32,8 @@ flowchart TB
   QA -->|승인| MERGE
   MERGE --> IDX["index_to_pgvector.py ④"]
 
-  XLSX["수리보고서·작업표준서 엑셀"] --> ING["ingest_excel_data.py<br/>시트 단위 라벨 파싱 ①⑦"]
+  XLSX1["작업지시서 엑셀"] --> ING["ingest_excel_data.py<br/>시트 단위 라벨 파싱 ①⑦"]
+  XLSX2["고장수리내역 엑셀"] --> ING
   ING --> IDX
 
   IDX --> PG[("PostgreSQL :55432<br/>manual_chunks ⑤")]
