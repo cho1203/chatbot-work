@@ -15,7 +15,7 @@
 
 ## 0부. 전체 아키텍처
 
-이 절의 그림은 "뭘 만드는가"를 보여주는 용도다 — GUIDE_10에도 비슷한 그림이 있지만 그건 "문제가 생겼을 때 어디를 보는가"용으로 번호(①~⑫)가 붙어 있어 역할이 다르다. 여기 그림엔 그 번호를 넣지 않는다.
+이 절의 그림은 "뭘 만드는가"를 보여주는 용도다 — GUIDE_10에도 비슷한 그림이 있지만 그건 "문제가 생겼을 때 어디를 보는가"용으로 번호(①~⑰)가 붙어 있어 역할이 다르다. 여기 그림엔 그 번호를 넣지 않는다.
 
 ### 0.0 기술 스택과 전제 조건
 
@@ -81,7 +81,7 @@ flowchart TB
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE manual_chunks (
-  chunk_id      TEXT PRIMARY KEY,         -- 예: "ko_p0021_fig_01", "repair_log_s05"
+  chunk_id      TEXT PRIMARY KEY,         -- 예: "ko_64484_p0021_fig_01", "repair_log_s05"
   doc_type      TEXT NOT NULL,            -- 'manual' | 'repair_log' | 'work_standard'
   chunk_type    TEXT,                     -- 매뉴얼만: 'text' | 'figure' | 'table' | 'ui_screen'
   lang          TEXT,                     -- 'ko' | 'en'
@@ -90,10 +90,10 @@ CREATE TABLE manual_chunks (
   text          TEXT NOT NULL,            -- 색인 문장(검색·임베딩 대상 원문)
   text_i18n     JSONB DEFAULT '{}',       -- 번역 캐시(2.3절). 조회된 언어만 채워짐
   metadata      JSONB DEFAULT '{}',       -- 나머지 전부: image_path, caption, ocr_caption, text_above,
-                                           -- text_below, table_html, page_image, pair_page, pair_page_image,
-                                           -- pair_text, pair_lang, manual_name, sheet_name, model, site,
-                                           -- work_name, report_date, fault_date, fault_location,
+                                           -- text_below, table_html, page_image, manual_name, sheet_name,
+                                           -- model, site, work_name, report_date, fault_date, fault_location,
                                            -- work_category, used_parts[], reporter, image_paths[]
+                                           -- 번역 짝 정보(원본↔번역본 페이지 대응)는 여기 안 넣는다 — 아래 참고
   embedding     VECTOR(1024) NOT NULL,    -- bge-m3, normalize_embeddings=True
   created_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -102,11 +102,13 @@ CREATE INDEX manual_chunks_embedding_idx
   ON manual_chunks USING hnsw (embedding vector_cosine_ops);
 ```
 
+**번역 짝(원본↔번역본) 정보는 `manual_chunks`에 안 넣는다** — 번역본은 애초에 색인 대상이 아니라서(1.1절) 이 테이블에 행 자체가 없다. 원본↔번역본 쪽 대응은 `page_align.py`가 `poc_parsing/.cache/page_align.json`(파일 캐시)에 저장한다(1.1절 "번역본 2종이 도착하면 할 일" 2번). **쪽수로 단순히 짝짓지 않는다** — 문서에 따라 원본·번역본 쪽수 범위 자체가 다를 수 있다(GUIDE_10 ⑰).
+
 **청킹 → DB 행 매핑 (어디서 뭐가 와서 어디로 들어가는지)**
 
 | DB 컬럼 | 매뉴얼 PDF 청크(0.6절) | 엑셀 청크(1.2절) |
 |---|---|---|
-| `chunk_id` | `{lang}_p{page}_{type}_{seq}` | `repair_log_s{시트 순번}` / `work_standard_{공정}` |
+| `chunk_id` | `{lang}_{docno}_p{page}_{type}_{seq}`(`docno`는 문서번호 뒤 5자리, 예: `64484`/`63874` — 3.13절에서 밝혀진 대로 `manual_1_ko`·`manual_1_en`이 서로 다른 문서라 `lang`만으로는 구분이 안 돼서 추가) | `repair_log_s{시트 순번}` / `work_standard_{공정}` |
 | `doc_type` | `'manual'` 고정 | `'repair_log'` 또는 `'work_standard'` |
 | `chunk_type` | `text`/`figure`/`table`/`ui_screen` | 안 씀(NULL) |
 | `equipment` | 안 씀(NULL) | 장비개요의 `장 비 명` 값 |
@@ -122,9 +124,9 @@ CREATE INDEX manual_chunks_embedding_idx
 
 ```json
 {
-  "chunk_id": "ko_p0021_fig_01",
+  "chunk_id": "ko_64484_p0021_fig_01",
   "bbox": [0, 0, 100, 100],
-  "image_path": "images/ko_p0021_fig_01.png",
+  "image_path": "images/ko_64484_p0021_fig_01.png",
   "caption": "원문 문장 또는 OCR·VLM 읽기 결과",
   "note": "우선순위 분류 결과 (예: VLM 불일치, 과다캡처)",
   "review_status": "pending"
@@ -143,12 +145,17 @@ sequenceDiagram
   participant I as index_to_pgvector.py
   participant V as PostgreSQL
   D->>B: 원본 PDF 두 권 입력 실행
-  B->>B: 본문은 텍스트 추출·청킹, 그림·표·화면은 별도 처리(0.6절 전체 파이프라인)
+  B->>B: 텍스트 정규화(아래) 적용 후 청킹, 그림·표·화면은 별도 처리(0.6절 전체 파이프라인)
   B->>J: 조각과 110 dpi 페이지 이미지 저장
   D->>I: 조각이 바뀐 뒤에만 실행
   I->>I: bge-m3로 정규화 임베딩
   I->>V: manual_chunks 전체 교체 적재
 ```
+
+**텍스트 정규화(청킹 전에 적용, 1부부터 적용)**
+- NFKC 정규화(전각→반각), `・`를 `·`로 통일
+- 머리말·꼬리말·쪽번호(`- 18 -` 형태)·빈 간지 페이지 제거, 표지·색인 페이지는 청킹 대상에서 제외
+- 한글 줄바꿈 복원: 줄 끝이 오른쪽 여백에 닿고 한글-한글로 이어지면 공백 없이 붙인 뒤 띄어쓰기 교정(예: `kiwipiepy`) — 안 하면 "살아있는 본문"인데도 단어가 중간에 끊겨 검색·임베딩 품질이 떨어진다
 
 ### 0.4 색인 순서 — 엑셀 (1.2절 라벨 기반 파싱 기준으로 수정됨)
 
@@ -289,8 +296,8 @@ flowchart TD
 
 | 항목 | 실제로 있는 것 | 새로 만들어야 하는 것 |
 |---|---|---|
-| 매뉴얼 PDF 2종(한글·영어 원본) | `data/samkwang/manual_1_ko.pdf`, `data/samkwang/manual_1_en.pdf` | 파일 자체는 안 만듦. 청크·색인(`rebuild_originals.py`, 0.3절)은 새로 만든다 |
-| 매뉴얼 번역본 2종 | 파일 없음, **입고 예정**(경로는 아래 체크리스트 1번) | 지금 데모는 제외. 도착하면 아래 "번역본 2종이 도착하면 할 일" 순서대로 추가 |
+| 매뉴얼 PDF 2종(한글·영어 원본) | `data/samkwang/manual_1_ko_OPERATOR'S.pdf`, `data/samkwang/manual_1_en_MODEL B.pdf`(2026-10-13 파일명 변경됨) | 파일 자체는 안 만듦. 청크·색인(`rebuild_originals.py`, 0.3절)은 새로 만든다 |
+| 매뉴얼 번역본 2종 | `data/samkwang/manual_2_ko_MODEL B.pdf`, `data/samkwang/manual_2_en_OPERATOR'S.pdf` — **파일 입고·짝 검증 완료**(2026-10-13, 문서번호 대조로 확인. 원본과 중복 파일이던 문제는 해결됨) | 아래 "번역본 2종이 도착하면 할 일" 순서대로 반영 |
 | 작업지시서 엑셀 | `data/samkwang/M3 TN4 DECO 작업표준서_251104.xlsx`, `data/samkwang/공구 수입검사 작업표준서.xlsx` | 파일 자체는 안 만듦. `ingest_excel_data.py`(1.2절)는 새로 만든다 |
 | 고장수리내역 엑셀 | 실제 경로는 1.2절 참고. 회사로부터 수령 완료, 구조 확인 완료 | 파일 자체는 안 만듦. `ingest_excel_data.py`(1.2절)는 새로 만든다 |
 | `document_type` 3분기(manual/work_standard/repair_log) | 설계만 있음(GUIDE_8 4.2절) | 질의 라우팅 로직에 이 분기를 구현 |
@@ -303,14 +310,16 @@ flowchart TD
 
 | 구분 | 파일 | 상태 | 구조 |
 |---|---|---|---|
-| 한글 원본 | `manual_1_ko.pdf`(B-64484KO-2 취급설명서) | **있음**, 검색 대상 | 402쪽, 암호 보호 가능(풀어서 `.cache/unlocked_manual_1.pdf`로 캐시). 청크 753개(`merged_ko.json`) — `text`/`table`/`figure` |
-| 영어 원본 | `manual_1_en.pdf`(B-63874EN-2 MANUAL GUIDE i) | **있음**, 검색 대상 | 558쪽. 청크 1,595개(`merged_en.json`) — `text`/`table`/`figure`/`ui_screen`. 둘을 합치면 `manual_chunks`에 들어갈 PDF 청크는 총 2,348개 |
-| 한글→영어 번역본 | `manual_2_en.pdf` | **입고 예정**(지금 없음) | `manual_1_ko` 내용의 영어 번역. 색인 대상이 **아님** — 언어 전환 버튼에서 원본과 같은 페이지를 짝지어 보여주는 용도만(`page_align.py`) |
-| 영어→한글 번역본 | `manual_2_ko.pdf` | **입고 예정**(지금 없음) | `manual_1_en` 내용의 한글 번역. 위와 동일 |
+| 한글 원본 | `manual_1_ko_OPERATOR'S.pdf`(B-64484KO-2/02, 395쪽) | **있음**, 검색 대상 | 암호 보호 가능(풀어서 `.cache/unlocked_manual_1.pdf`로 캐시). 청크 753개(`merged_ko.json`) — `text`/`table`/`figure` |
+| 영어 원본 | `manual_1_en_MODEL B.pdf`(B-63874EN-2/04 MANUAL GUIDE i, 543쪽) | **있음**, 검색 대상 | 청크 1,595개(`merged_en.json`) — `text`/`table`/`figure`/`ui_screen`. 둘을 합치면 `manual_chunks`에 들어갈 PDF 청크는 총 2,348개 |
+| 한글→영어 번역본 | `manual_2_en_OPERATOR'S.pdf`(B-64484EN-2/03, 434쪽) | **파일 입고됨**, 검증 완료 | `manual_1_ko`(B-64484KO-2/02)와 같은 문서번호 — **실제로 같은 문서의 영어판**(2026-10-13 `pdftotext`로 문서번호 직접 대조 확인). 색인 대상이 **아님** — 언어 전환 버튼에서 원본과 같은 페이지를 짝지어 보여주는 용도만(`page_align.py`) |
+| 영어→한글 번역본 | `manual_2_ko_MODEL B.pdf`(B-63874KO/10, 753쪽) | **파일 입고됨**, 검증 완료 | `manual_1_en`(B-63874EN-2/04)과 같은 문서번호 — **같은 문서의 한글판이지만 범위가 다름**(KO는 선반+MC 공통으로 보여 쪽수가 더 많음, EN은 MC 전용). 색인 대상 아님, 위와 동일 용도 |
 
-**번역본 2종이 도착하면 할 일 (미리 적어 두는 체크리스트 — 헷갈리지 않게)**
+**참고**: 파일명의 `MODEL B`/`OPERATOR'S` 표시는 번역 짝 방향과는 무관하다(CNC 컨트롤러 시리즈명·문서 제목에서 따온 것). 문서번호(`B-64484`/`B-63874`) 기준으로 대조한 결과 위 표의 짝 방향이 맞다 — 3.13절에 이 검증을 근거로 한 스키마 확장 제안(두 문서군을 명시적으로 구분하는 `doc_id`/`align_key` 등)을 남겨 두었다.
 
-1. `data/samkwang/manual_2_ko.pdf`, `manual_2_en.pdf`로 저장(파일명 고정)
+**번역본 2종 입고됨 — 처리 체크리스트 (미리 적어 두는 체크리스트 — 헷갈리지 않게)**
+
+1. ~~`data/samkwang/manual_2_ko.pdf`, `manual_2_en.pdf`로 저장(파일명 고정)~~ — 파일은 입고·저장·짝 검증까지 완료(2026-10-13, 파일명 중복 확장자 문제도 해결됨). 다만 실제 파일명이 `manual_2_ko_MODEL B.pdf`, `manual_2_en_OPERATOR'S.pdf`로 설계가 가정한 단순 이름(공백·작은따옴표 포함)과는 여전히 다르다 — 이대로 쓸지 정리해서 쓸지는 **분석 예정**
 2. `page_align.py`로 원본↔번역본 쪽수 짝을 맞춘다 — 파일 쪽 번호가 같다고 가정하지 않는다(실제 쪽 번호가 어긋날 수 있음). **DB 테이블이 아니라 파일 캐시**로 `poc_parsing/.cache/page_align.json`에 저장한다. 짝 하나당 `page`(원본 쪽수)·`text`(번역 쪽 문장)·`has_graphic`(그림이 그 쪽에도 있는지) 3개 필드를 둔다. 화면에는 번역 페이지 오른쪽 위에 "원본 p.N"을 표시한다(`page_align.py`의 `mark`)
 3. `merged_ko/en.json`·`manual_chunks`에는 추가하지 **않는다** — 번역본은 검색 대상이 아니라 "언어 전환 버튼"에서 원본과 짝지어 보여주는 역할만 한다(1.1절 표와 동일 원칙)
 4. `GET /manuals/{name}.pdf`의 `name`에 `manual_2_ko`/`manual_2_en`을 추가하고, 1.6절 UI의 "원본 선택 버튼" 옆(또는 대체)에 "번역 보기" 버튼을 연결한다
@@ -350,13 +359,13 @@ POST /ask 응답
 ```json
 POST /search 응답 (배열, 항목 하나)
 {
-  "chunk_id": "ko_p0021_fig_01",
+  "chunk_id": "ko_64484_p0021_fig_01",
   "chunk_type": "figure",
   "page": 21,
   "lang": "ko",
   "text_preview": "캡션 앞부분 일부",
-  "source_anchor": "ko_p0021_fig_01",
-  "image_path": "images/ko_p0021_fig_01.png"
+  "source_anchor": "ko_64484_p0021_fig_01",
+  "image_path": "images/ko_64484_p0021_fig_01.png"
 }
 ```
 
@@ -413,7 +422,7 @@ GET /filters 응답
 이 저장소에는 아래 스크립트가 하나도 없다. 0번부터 전부 새로 작성한다.
 
 ```
-0. 다음 파일을 1.2절·0.2절·0.6절 설계대로 새로 작성한다: rebuild_originals.py, ingest_excel_data.py, index_to_pgvector.py, search_api.py
+0. 다음 파일을 1.2절·0.2절·0.3절·0.6절 설계대로 새로 작성한다: rebuild_originals.py, ingest_excel_data.py, index_to_pgvector.py, search_api.py
 1. ingest_excel_data.py 실행 → repair_logs.json, work_standard_*.json 생성
    (1.2절의 라벨 기반 파서로 작성 — pandas로 행을 읽는 방식은 쓰지 않는다)
 2. index_to_pgvector.py 실행 → PDF 청크(merged_ko/en.json) + 엑셀 청크를 합쳐
@@ -480,6 +489,8 @@ table_html이 있으면      → 표로 렌더링(innerHTML로 삽입 — 우리
 | 고장수리내역 | `repair_log` |
 
 **매뉴얼 탭 — 원본 선택 버튼**: 한글 원본(`manual_1_ko`)과 영어 원본(`manual_1_en`) 중 어느 걸 볼지 고르는 버튼이 있어야 한다. 이건 "번역 보기 전환"이 아니라 "이미 둘 다 있는 원본 중 하나를 고르는 선택"이라서, 번역본(`manual_2_ko`/`manual_2_en`) 파일이 없어도 만드는 데 문제가 없다 — 두 원본 다 1.1절에서 이미 "준비됨, 검색 대상"으로 확인됐다.
+
+**주의 — 버튼을 단순 "언어 전환"으로 표기하지 않는다.** 3.13절에서 확인했듯 `manual_1_ko`(B-64484, OPERATOR'S MANUAL)와 `manual_1_en`(B-63874, MANUAL GUIDE i)은 **같은 내용을 언어만 바꾼 게 아니라 서로 다른 매뉴얼**이다. 그래서 버튼 라벨은 "한글/영어"가 아니라 "OPERATOR'S MANUAL(한글) / MANUAL GUIDE i(영어)"처럼 **어떤 책인지가 드러나게** 달아야 한다 — "영어로 바꾸기" 버튼처럼 보이면 사용자가 "OPERATOR'S MANUAL을 영어로" 보고 싶을 때 착각할 수 있다(그 조합은 `manual_2_en`이고, 검색이 아니라 번역 보기로만 제공됨).
 
 **작업지시서·고장수리내역 탭 — 언어 선택 버튼**: 한국어·영어·일본어·중국어·베트남어 중 고르는 버튼이 있어야 한다(2부 다국어 지원 메커니즘 사용). 버튼으로 언어를 바꾸면 이상부위·고장현상·조치내용 같은 결과 문장이 그 언어로 바뀌어 보인다. 이 두 탭의 다국어 버튼은 **데모에 포함하기로 확정**했다(2.7절).
 
@@ -642,7 +653,7 @@ CREATE TABLE report_photos (
 | AI 자체 언어 판정 | AI가 질문 언어를 판정하고 번역 매뉴얼로 답변 |
 | 조합 | 설정 언어를 답변에 적용, AI 판정은 검색 보조로만 사용 |
 
-두 안은 배타적이지 않아서 같이 쓸 수 있다. **확인 필요**: 한국어·영어 매뉴얼의 준비·검수 상태, 원문·번역본 버전·페이지 연결, 외국어 질문으로 한국어 수리 기록을 찾는 방법. 원문이 개정된 뒤 오래된 번역본을 최신인 것처럼 안내하면 안 된다. 이건 2부의 작업지시서·고장수리내역 다국어(사전+캐시)와는 다른 문제다 — 여긴 매뉴얼 "원문 자체의 언어"를 다루고, 2부는 "구조화된 필드 값의 번역"을 다룬다.
+두 안은 배타적이지 않아서 같이 쓸 수 있다. **일부 해소(2026-10-13)**: 원문·번역본 짝 자체는 문서번호 대조로 확인됐다(3.13절 — `manual_1_ko`↔`manual_2_en`, `manual_1_en`↔`manual_2_ko`). **확인 필요로 남은 것**: 번역본의 실제 검수 상태(기계번역인지 공식 번역인지 — `text_source` 제안, 3.13절), 외국어 질문으로 한국어 수리 기록을 찾는 방법, 그리고 새로 드러난 문제 하나 — **B군(`B-63874`)은 한글판이 선반+MC 공통, 영어판이 MC 전용이라 범위가 다르다.** 한글판에만 있는 선반 관련 내용을 영어로 질문하면 검색 대상 영어 원문(`manual_1_en`) 자체에 그 내용이 없어서 "자료 없음"이 정답이다 — 번역이 안 됐다고 착각해 지어내면 안 된다. 원문이 개정된 뒤 오래된 번역본을 최신인 것처럼 안내하면 안 된다는 원칙도 유지. 이건 2부의 작업지시서·고장수리내역 다국어(사전+캐시)와는 다른 문제다 — 여긴 매뉴얼 "원문 자체의 언어"를 다루고, 2부는 "구조화된 필드 값의 번역"을 다룬다.
 
 ### 3.5 기존 수리 자료 이관 및 문서 열람
 
@@ -780,7 +791,102 @@ POST /reports/{id}/excel
 
 위 예시는 3.1·3.2·3.8절의 요구사항만 보고 쓴 초안이다. 실제 필드 이름·에러 코드·인증 방식은 AI 팀 회신 뒤에 확정한다 — 지금 이 예시로 코드를 먼저 짜지 않는다.
 
-### 3.13 이 문서의 한계
+### 3.13 manual_chunks 스키마 확장 — 두 문서군 정렬(align) 설계 (제안)
+
+**검증 결과(2026-10-13, 실제 4개 PDF를 직접 열어 확인)**: 매뉴얼 PDF는 번호(`manual_1`/`manual_2`)로 묶이는 게 아니라 **문서번호로 묶이는 서로 다른 두 문서군**이다. 아래 문서번호·쪽수는 `pdftotext`로 직접 뽑아서 확인한 값이다.
+
+| 문서군 | 한글 | 영어 | 비고 |
+|---|---|---|---|
+| A: `B-64484`(OPERATOR'S MANUAL, Machining Center System) | `manual_1_ko` · B-64484KO-2/02 · 395쪽 | `manual_2_en` · B-64484EN-2/03 · 434쪽 | 같은 문서, 언어만 다름 |
+| B: `B-63874`(MANUAL GUIDE i) | `manual_2_ko` · B-63874KO/10 · 753쪽 | `manual_1_en` · B-63874EN-2/04 · 543쪽 | **범위가 다름** — KO는 선반+MC 공통, EN은 MC 전용으로 보임(본문 "/Machining Center" 표기 차이). 쪽수 차이(753 vs 543)도 이 범위 차이와 맞음 |
+
+즉 **1.1절의 "번역본" 방향 설명은 맞다**(`manual_1_ko`↔`manual_2_en`, `manual_1_en`↔`manual_2_ko`) — 지난 턴에 남겨둔 "확인 필요" 플래그는 이걸로 해소됐다. 다만 A군과 B군은 서로 다른 매뉴얼이라서, 둘을 하나의 "원본 2종"처럼 다루면 안 된다는 게 이번에 새로 드러난 사실이다.
+
+**아래는 이 사실을 근거로 받은 제안이다(사용자 제공, 쪽수·문서번호는 위 표로 검증됨 / G코드·알람 일치율·폰트 크기·페이지 넘는 표 개수 같은 세부 수치는 제공받은 값을 그대로 적은 것이고 이 세션에서 직접 재검증하지 않음).** 1부 데모 스키마(0.2절)는 "책 선택" 수준이라 이 복잡도가 필요 없어서 그대로 두고, 여기 3부에 프로덕션 설계로 남긴다.
+
+**스키마 확장 — `manual_chunks`에 컬럼 추가(기존 컬럼 유지, 엑셀 행은 전부 NULL 허용)**
+
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `doc_id` | TEXT | 문서번호+판. 예: `B-64484KO-2/02`. 엑셀은 파일명 |
+| `align_key` | TEXT | 언어 무관 공통 키. 예: `B-64484-2:II-3.1.1:text:01`. KO/EN 같은 내용이면 같은 값 |
+| `section_no` | TEXT | 예: `II-3.1.1` |
+| `section_path` | TEXT | 예: `PROGRAMMING > 보간기능 > Involute 보간 > 자동속도제어` |
+| `page_start`, `page_end` | INT | 기존 `page`를 대체. 기존 값은 `page_start`로 옮기고 `page`는 하위호환용으로만 남김 |
+| `model` | TEXT | 예: `30i-B`. 기존 `metadata.model`에서 승격 |
+| `machine_type` | TEXT | `common` / `lathe` / `mc` — 위 B군처럼 KO·EN 범위가 다른 문서를 걸러내는 하드 필터용 |
+| `text_source` | TEXT | `original` / `official` / `mt` / `mt_reviewed` |
+| `anchors` | TEXT[] | 언어 무관 식별자. 예: `{G02.2, G03.2, P5610, PS0243, FIG3.1(c)}` |
+| `embed_text` | TEXT | 실제 임베딩한 문자열(`section_path + "\n" + text`) |
+| `source_hash` | TEXT | 원문 해시 — 재적재 시 중복·변경 판별 |
+| `updated_at` | TIMESTAMPTZ | — |
+
+`chunk_type` CHECK 제약: 매뉴얼은 `text`/`table`/`figure`/`ui_screen`/`note`(경고·주의·주 박스) 중 하나, 엑셀 행은 NULL 허용.
+
+`chunk_id` 규칙 변경: 매뉴얼은 `{doc_id 정규화}_{section_no}_{chunk_type}_{seq}`(예: `B64484KO2-02_II-3.1.1_text_01`) — 1부에서 이미 `{lang}_{docno}_p{page}_{type}_{seq}`로 문서 구분까지는 넣어 뒀지만(0.2절), 프로덕션에서는 쪽수 대신 **절 번호(`section_no`)**를 키로 써야 한다 — 쪽수는 판마다 바뀌지만 절 번호는 안 바뀐다(정렬·인용 기준으로도 더 안정적). 엑셀 규칙(`repair_log_s{순번}`, `work_standard_{공정}`)은 그대로 둔다. 기존 적재분이 있으면 구id→신id 매핑 테이블로 마이그레이션한다.
+
+**정렬 테이블 `chunk_alignments`(신규)**
+
+```sql
+CREATE TABLE chunk_alignments (
+  id           BIGSERIAL PRIMARY KEY,
+  align_key    TEXT NOT NULL,
+  ko_chunk_id  TEXT REFERENCES manual_chunks(chunk_id) ON DELETE CASCADE,
+  en_chunk_id  TEXT REFERENCES manual_chunks(chunk_id) ON DELETE CASCADE,
+  ko_text      TEXT,
+  en_text      TEXT,
+  unit         TEXT NOT NULL,                 -- 'sentence' | 'table_row' | 'list_item'
+  pair_type    TEXT NOT NULL,                 -- '1:1' | '1:2' | '2:1' | '1:0' | '0:1'
+  score        REAL,
+  status       TEXT NOT NULL DEFAULT 'auto',  -- 'auto' | 'review' | 'confirmed' | 'rejected'
+  method       TEXT,
+  created_at   TIMESTAMPTZ DEFAULT now()
+);
+```
+
+`score >= 0.8`이면 `auto`, `0.5~0.8`이면 `review`, 짝이 없으면 `1:0`/`0:1`로 저장. 1부의 `poc_parsing/.cache/page_align.json` 파일 캐시(1.1절)는 이 테이블로 승격된다 — 번역 짝 정보를 파일이 아니라 DB(`align_key` 기준)로 관리하게 됨(`image_path`·`caption`·`table_html` 등 정렬과 무관한 `metadata` 키는 그대로 둔다).
+
+**인덱스 추가**
+
+```sql
+CREATE INDEX ON manual_chunks (doc_type, lang);
+CREATE INDEX ON manual_chunks (doc_id);
+CREATE INDEX ON manual_chunks (align_key);
+CREATE INDEX ON manual_chunks (model, machine_type);
+CREATE INDEX ON manual_chunks USING gin (anchors);
+CREATE INDEX ON chunk_alignments (align_key);
+-- 기존 HNSW 인덱스(0.2절)는 유지
+```
+
+**적재 파이프라인 변경(매뉴얼)**
+- 텍스트 정규화·한글 줄바꿈 복원은 **1부에서 이미 적용**(0.3절) — 프로덕션에서 추가로 바뀌는 건 아래부터다
+- 그림 영역 안 라벨 텍스트는 본문에서 빼서 `figure` 청크의 `metadata.labels`로
+- 페이지 넘는 표는 병합해 하나의 `table` 청크로(`page_start`/`page_end` 채움)
+- 청킹은 최하위 절 단위, 300~1000토큰(페이지 단위로 자르지 않음)
+- `anchors`는 정규식으로 추출: G코드, `No.####` 파라미터, `PS####` 알람, 그림·표 번호
+- KO/EN 매칭: `section_no` + 제목 속 G코드 + `anchors` 교집합 → 같은 `align_key` 부여 → 매칭된 청크 안에서 문장·표 행 정렬해 `chunk_alignments`에 저장
+- `embed_text`로 임베딩(bge-m3, `normalize_embeddings=True`)
+
+**검색 쿼리 변경**: 질문에 G코드·알람 번호 같은 코드가 있으면 `anchors && ARRAY[...]` 필터를 벡터 검색과 하이브리드로 같이 쓴다. 같은 `align_key`의 KO/EN이 둘 다 나오면 사용자 언어 쪽만 남긴다. 근거 표시에 `section_path`·`page_start`·`doc_id`를 쓴다.
+
+**지키지 말아야 할 것**: 페이지 번호로 KO/EN을 짝짓지 않는다(판·글자크기가 달라 틀린다 — 위 표의 쪽수 차이가 실제 증거). 엑셀 청크(`repair_log`/`work_standard`)의 기존 동작은 바꾸지 않는다(신규 컬럼은 NULL 허용). 마이그레이션은 up/down 되돌릴 수 있게 작성한다.
+
+**검증 쿼리(적용 후 돌려서 결과 보고)**
+
+```sql
+SELECT doc_id, lang, chunk_type, count(*) FROM manual_chunks WHERE doc_type='manual' GROUP BY 1,2,3;
+
+SELECT doc_id, count(*) FILTER (WHERE n=2)::float/count(*) FROM
+ (SELECT align_key, min(doc_id) doc_id, count(DISTINCT lang) n FROM manual_chunks WHERE doc_type='manual' GROUP BY 1) t GROUP BY 1;
+
+SELECT status, pair_type, count(*) FROM chunk_alignments GROUP BY 1,2;
+
+SELECT chunk_id, count(*) FROM manual_chunks GROUP BY 1 HAVING count(*)>1;
+```
+
+**그대로 둬도 되는 것**: 매뉴얼·엑셀을 한 테이블에 같이 넣는 구조, `bge-m3`/`VECTOR(1024)`/HNSW+cosine(0.2절)은 그대로 유지. `text_i18n`은 화면 표시용 번역 캐시로 유지하되, 공식 번역은 별도 행(`lang='en'`, `text_source='official'`)으로 넣어야 검색·정렬에 쓸 수 있다.
+
+### 3.14 이 문서의 한계
 
 0부 아키텍처 그림은 1·2부가 실제로 구현된 내용과 GUIDE_6 3.5절의 기존 설계를 그대로 그린 것이다. 1부 체크리스트는 실제 파일 구조를 확인하고 쓴 것이지만, 아직 서버에 돌려서 검증하지는 않았다. 2부 다국어 지원의 번역값은 초안이라 담당자 검토 전까지 쓰지 않는다. 3부는 전체가 AI 팀 회신을 기다리는 초안이다 — 특히 3.3~3.11절은 요구사항을 표로 정리한 수준이고 스키마·API까지 구체화된 건 3.1·3.2절 두 개뿐이다. 회신이 오면 3부 전체를 다시 써야 한다. 포트·경로·수치 기준값은 이 문서에 없다 — GUIDE_10을 본다.
 

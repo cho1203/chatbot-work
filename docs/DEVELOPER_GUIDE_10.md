@@ -66,6 +66,7 @@ flowchart TB
 | ⑭ | 장식선을 표로 오판 | 밑줄·구분선이 세로로 여러 번 나열되면 우연히 "가로선4·세로선2" 조건을 만족해 표로 잘못 잡힐 수 있음 | QA 대기열에서 "표"로 분류된 항목 중 실제로는 표가 아닌 게 있는지 확인(과다캡처·기능혼입 우선순위부터) |
 | ⑮ | 음영 표를 놓침 | 선이 없고 칸마다 배경색만 다른 표는 `get_drawings()`로 선을 못 찾아서 표로 안 잡힘 | 표로 안 잡힌 쪽 중 실제 표가 있는지 샘플로 확인한다 |
 | ⑯ | 인접한 작은 표가 하나로 합쳐짐 | 겹침 검사 없이 가까운 표 여러 개를 하나의 큰 영역으로 잘못 합치는, 예전에 겪었던 "크롭 버그"와 같은 종류의 문제 | 겹침 검사(0.6절 "C" 단계)를 꼭 거치게 하고, 비정상적으로 큰 크롭 이미지가 있는지 확인한다 |
+| ⑰ | 매뉴얼 PDF가 번호(`manual_1`/`manual_2`)로 묶인 게 아님 | `manual_1_ko`↔`manual_2_en`이 같은 문서(B-64484)의 번역 짝이고, `manual_1_en`↔`manual_2_ko`가 같은 문서(B-63874)의 번역 짝이다(문서번호로 직접 대조 확인, 2026-10-13). `manual_1_ko`↔`manual_1_en`은 서로 다른 문서라 번역 관계가 아니다 | "원본 선택" 버튼은 책 자체를 고르는 것이라 문제 없지만, "번역 보기" 버튼·`page_align.py` 짝짓기는 반드시 문서번호 기준으로 해야 한다(GUIDE_9 1.1절·3.13절). 쪽수로 짝짓지 않는다 — B-63874 쌍은 KO가 EN보다 범위가 넓어 쪽수 차이(753 vs 543)가 정상이다 |
 
 ## 2. 포트·주소
 
@@ -81,9 +82,9 @@ flowchart TB
 
 | 분류 | 경로 |
 |---|---|
-| 매뉴얼 한글 원본 | `data/samkwang/manual_1_ko.pdf` |
-| 매뉴얼 영어 원본 | `data/samkwang/manual_1_en.pdf` |
-| 매뉴얼 번역본(입고 예정) | `data/samkwang/manual_2_ko.pdf`, `manual_2_en.pdf` |
+| 매뉴얼 한글 원본 | `data/samkwang/manual_1_ko_OPERATOR'S.pdf` |
+| 매뉴얼 영어 원본 | `data/samkwang/manual_1_en_MODEL B.pdf` |
+| 매뉴얼 번역본(입고·짝 검증 완료, 2026-10-13) | `data/samkwang/manual_2_ko_MODEL B.pdf`, `manual_2_en_OPERATOR'S.pdf` |
 | 번역 짝 캐시 | `poc_parsing/.cache/page_align.json` |
 | 작업지시서 | `data/samkwang/M3 TN4 DECO 작업표준서_251104.xlsx`, `공구 수입검사 작업표준서.xlsx` |
 | 고장수리내역 | `data/samkwang/설비 수리 보고서.xlsx` |
@@ -93,7 +94,7 @@ flowchart TB
 | 엑셀 청크 출력 | `repair_logs.json`, `work_standard_mct.json`, `work_standard_tools.json` |
 
 **세부 수치**
-- 매뉴얼: 한글 402쪽(청크 753개), 영어 558쪽(청크 1,595개), 합계 2,348개
+- 매뉴얼: 한글(B-64484KO-2/02) 395쪽, 영어(B-63874EN-2/04) 543쪽(2026-10-13 `pdftotext`로 직접 확인). 청크 수(753개/1,595개, 합계 2,348개)는 이전 환경에서 실제로 색인했을 때 나온 값 — 쪽수와 측정 기준이 달라 숫자가 딱 비례하진 않는다
 - 번역 짝: 이전 환경 기준 925개(ko 391 + en 534), 그림 짝(`has_graphic`)은 0개 — 캐시 필드는 `page`·`text`·`has_graphic`
 - 작업지시서: 시트 1개 = 공정 1건(2시트+1시트) · 고장수리내역: 시트 1개 = 사례 1건(40시트) — 전부 수령 완료
 - 그림·표: 584건 전부 검수 대기, 필드 구조는 GUIDE_9 0.2절
@@ -105,9 +106,9 @@ flowchart TB
 문제가 안 풀리면 가장 먼저 이 순서로 확인한다. 전부 3절(파일 경로)·2절(포트·주소)에 있는 값 그대로다.
 
 **원본 파일이 실제로 있는지**
-- [ ] `data/samkwang/manual_1_ko.pdf`
-- [ ] `data/samkwang/manual_1_en.pdf`
-- [ ] `data/samkwang/manual_2_ko.pdf`, `manual_2_en.pdf` (입고 전엔 없는 게 정상)
+- [ ] `data/samkwang/manual_1_ko_OPERATOR'S.pdf`
+- [ ] `data/samkwang/manual_1_en_MODEL B.pdf`
+- [ ] `data/samkwang/manual_2_ko_MODEL B.pdf`, `manual_2_en_OPERATOR'S.pdf` (입고·짝 검증 완료, 2026-10-13)
 - [ ] `data/samkwang/M3 TN4 DECO 작업표준서_251104.xlsx`
 - [ ] `data/samkwang/공구 수입검사 작업표준서.xlsx`
 - [ ] `data/samkwang/설비 수리 보고서.xlsx`
@@ -132,7 +133,7 @@ flowchart TB
 
 | 컬럼 | 값 |
 |---|---|
-| `chunk_id` | `PRIMARY KEY`, 예: `ko_p0021_fig_01`, `repair_log_s05` |
+| `chunk_id` | `PRIMARY KEY`, 예: `ko_64484_p0021_fig_01`, `repair_log_s05` — `{lang}_{docno}_p{page}_{type}_{seq}`(⑰ 참고: `manual_1_ko`·`manual_1_en`이 서로 다른 문서라 `docno` 필요) |
 | `doc_type` | `manual` / `repair_log` / `work_standard` |
 | `chunk_type` | 매뉴얼만: `text` / `figure` / `table` / `ui_screen` |
 | `lang`, `page`, `equipment` | `ko`/`en`, PDF 쪽수(매뉴얼만), 설비명(엑셀만, 하드 필터용) |
